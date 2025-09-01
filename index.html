@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Task Scheduler — Mobile fixes</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<style>
+:root{
+  --bg-page:#000; --bg-container:#07080a; --card:#0c1114; --muted:#8b9499; --text:#d9e1e8;
+  --accent:#4e8cff; --border:rgba(255,255,255,0.06); --focus:rgba(78,140,255,0.10);
+  --ghost-shadow:rgba(0,0,0,0.6);
+}
+/* reset & layout */
+*{box-sizing:border-box;margin:0;padding:0;font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,Arial;color:var(--text);-webkit-font-smoothing:antialiased}
+html,body{min-height:100%;background:var(--bg-page)}
+body{display:flex;align-items:flex-start;justify-content:center;padding:12px}
+.container{width:100%;max-width:1200px;border-radius:8px;background:var(--bg-container);border:1px solid var(--border);overflow:visible}
+header{padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.03)}
+h1{font-size:1.2rem;color:var(--text);font-weight:700}
+.app-description{color:var(--muted);font-size:0.85rem;margin-top:2px}
+
+/* main */
+.main-content{display:flex;gap:14px;padding:14px;flex-wrap:wrap}
+.input-section{flex:1;min-width:280px;padding:14px;background:linear-gradient(180deg,var(--card),rgba(255,255,255,0.012));border-radius:6px;border:1px solid var(--border)}
+.schedule-section{flex:2;min-width:300px}
+.form-group{margin-bottom:10px}
+label{display:block;margin-bottom:6px;font-weight:600;color:var(--muted);font-size:0.9rem}
+input[type="time"],input[type="text"],input[type="number"],input[type="range"],button,input[type="date"]{width:100%;padding:8px 10px;border-radius:5px;border:1px solid rgba(255,255,255,0.03);background:rgba(255,255,255,0.01);color:var(--text);font-size:0.95rem}
+input::placeholder{color:rgba(217,225,230,0.45)}
+input:focus,select:focus{box-shadow:0 4px 12px var(--focus);border-color:var(--accent);outline:none}
+button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255,0.01));border:1px solid rgba(255,255,255,0.03);color:var(--text);font-weight:700;cursor:pointer;display:inline-flex;gap:6px;align-items:center;justify-content:center;font-size:0.9rem}
+.small-btn{background:transparent;border:1px solid var(--border);padding:6px 8px;border-radius:5px;font-size:0.85rem}
+.task-controls{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.keyboard-hint{font-size:0.85rem;color:var(--muted);margin-top:6px;text-align:center}
+
+/* schedule table */
+.schedule{margin-top:10px;border-radius:6px;border:1px solid rgba(255,255,255,0.03);background:transparent;overflow:visible}
+.schedule-header,.schedule-item{display:grid;grid-template-columns:40px 110px 1fr 110px 140px;gap:6px;border-bottom:1px solid rgba(255,255,255,0.02)}
+.schedule-header div{padding:8px;text-align:center;font-size:0.9rem;color:var(--muted);font-weight:800;border-bottom:1px solid rgba(255,255,255,0.02)}
+.schedule-item{padding:0;background:linear-gradient(180deg,rgba(255,255,255,0.005),rgba(0,0,0,0.012))}
+.schedule-item:last-child{border-bottom:none}
+.time-block,.duration-block{padding:10px;background:rgba(255,255,255,0.012);text-align:center;font-weight:700;display:flex;flex-direction:column;justify-content:center;font-size:0.9rem}
+.task-block{padding:10px;display:flex;justify-content:space-between;align-items:center;gap:6px}
+.task-name{font-weight:700;margin-bottom:4px;color:var(--text);padding:4px;border-radius:4px;background:transparent;min-width:100px;cursor:text;touch-action:manipulation;-webkit-user-select:text;user-select:text;font-size:0.95rem}
+.task-name:focus,.editable-duration:focus{outline:none;box-shadow:0 4px 12px var(--focus);border:1px dashed rgba(255,255,255,0.03)}
+.editable-duration{padding:4px;border-radius:4px;cursor:text;min-width:24px;text-align:center;display:inline-block;touch-action:manipulation;-webkit-user-select:text;user-select:text;font-weight:700;font-size:0.9rem}
+.drag-handle{cursor:grab;padding:6px;color:var(--muted);font-size:0.95rem;text-align:center;user-select:none;border-radius:4px;touch-action:none}
+.drag-handle:active{cursor:grabbing;transform:scale(.995);background:rgba(255,255,255,0.01)}
+.placeholder{border:1px dashed rgba(255,255,255,0.05);background:rgba(255,255,255,0.01);margin:6px 8px;border-radius:4px}
+.drag-ghost{position:fixed;pointer-events:none;z-index:9999;opacity:.96;border-radius:5px;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(0,0,0,0.04));box-shadow:0 10px 25px var(--ghost-shadow);transform-origin:center;transition:transform .08s}
+.gap-time{background:rgba(255,255,255,0.01);text-align:center;padding:8px;font-size:0.9rem;color:var(--muted);font-weight:700;grid-column:1 / -1;border-top:1px solid rgba(255,255,255,0.02);border-bottom:1px solid rgba(255,255,255,0.02)}
+.actions-block{display:flex;justify-content:center;gap:6px;align-items:center;padding:6px}
+.action-btn{touch-action:manipulation;pointer-events:auto;padding:6px;font-size:0.9rem}
+
+/* active highlight */
+.schedule-item.active{background:linear-gradient(90deg,rgba(78,140,255,0.06),rgba(78,140,255,0.02));border:2px solid var(--accent);border-radius:5px;position:relative;box-shadow:0 6px 20px rgba(78,140,255,0.06)}
+.gap-time.active{background:linear-gradient(90deg,rgba(110,80,200,0.06),rgba(110,80,200,0.02));border:2px solid rgba(110,80,200,0.9);border-radius:5px;position:relative;box-shadow:0 6px 20px rgba(110,80,200,0.05)}
+
+/* Modal styles */
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center;z-index:2000}
+.modal{background:var(--card);border-radius:8px;padding:16px;max-width:92%;width:420px;border:1px solid var(--border);box-shadow:0 10px 30px rgba(0,0,0,0.6)}
+.modal h3{margin-bottom:8px}
+.modal .modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
+.modal .modal-input{width:100%;padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.03);background:rgba(255,255,255,0.01);color:var(--text)}
+
+/* Mobile layout */
+@media(max-width:968px){
+  body{padding:10px}
+  .container{border-radius:6px}
+  .main-content{flex-direction:column;gap:12px;padding:12px}
+  
+  /* Mobile-optimized layout */
+  .schedule-header{display:none}
+  .schedule-item{display:flex;flex-direction:column;padding:10px;gap:8px;border-bottom:1px solid rgba(255,255,255,0.05);margin-bottom:6px;border-radius:5px;background:rgba(255,255,255,0.01)}
+  
+  /* Task header with name and action buttons */
+  .task-header{display:flex;justify-content:space-between;align-items:flex-start;width:100%;gap:8px}
+  .task-name{font-size:1rem;margin:0;padding:4px;min-width:0;flex:1;line-height:1.3;border:none;background:transparent}
+  
+  /* Action buttons on the right - horizontal layout */
+  .mobile-actions{display:flex;gap:4px;align-items:center}
+  .mobile-move-controls{display:flex;gap:4px}
+  .mobile-move-controls button{font-size:12px;padding:7px 8px}
+  .actions-block{justify-content:flex-end;padding:0;gap:4px}
+  .actions-block button{padding:7px 8px;font-size:12px}
+  
+  /* Task details - time and duration below */
+  .task-details{display:flex;justify-content:space-between;align-items:center;width:100%;font-size:0.85rem;color:var(--muted);margin-top:4px}
+  .time-display{display:flex;align-items:center;gap:6px}
+  .duration-block{display:flex;align-items:center;gap:4px;padding:0;background:transparent}
+  .duration-block span{font-weight:600;padding:4px 6px;background:rgba(255,255,255,0.03);border-radius:4px;min-width:30px;display:inline-block;text-align:center;font-size:0.9rem}
+  
+  /* Hide desktop elements */
+  .schedule-item .time-block,
+  .schedule-item .drag-handle,
+  .schedule-item .task-block{display:none}
+  
+  /* Adjust input section for mobile */
+  .input-section{padding:12px}
+  .form-group{margin-bottom:8px}
+  .task-controls{flex-direction:column;gap:6px}
+  .task-controls button{width:100%;padding:8px;font-size:0.9rem}
+  
+  /* Adjust date picker section */
+  .schedule-section > div:first-child{flex-wrap:wrap;gap:6px}
+  #date-picker{width:100%;order:3;margin-top:6px;padding:8px;font-size:0.9rem}
+  
+  /* Make gap indicator more compact */
+  .gap-time{padding:6px;font-size:0.85rem;margin:4px 0}
+  
+  /* Fix for duration editing */
+  .editable-duration{min-width:30px;padding:4px 6px;font-size:0.9rem;background:rgba(255,255,255,0.03);border-radius:4px;border:1px solid transparent}
+  .editable-duration:focus{background:rgba(255,255,255,0.05);border:1px dashed var(--accent)}
+  
+  /* Fixed note styling */
+  .fixed-note{font-size:0.8rem;color:var(--muted);margin-top:4px}
+}
+
+/* Desktop only */
+@media(min-width:969px){
+  .mobile-time{display:none}
+  .mobile-actions{display:none}
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div style="width:100%;"><h1>Task Scheduler</h1><div class="app-description">Plan your day. History, import/export and live indicators included.</div></div>
+  </header>
+
+  <!-- Templates -->
+  <template id="tpl-schedule-item">
+    <div class="schedule-item" data-id="" draggable="true" data-type="task">
+      <div class="drag-handle" title="Drag to reorder"><i class="fas fa-grip-lines"></i></div>
+      <div class="time-block"></div>
+      <div class="task-block">
+        <div class="task-info">
+          <div class="task-name" contenteditable="true" data-id=""></div>
+          <div class="mobile-time"></div>
+          <div class="fixed-note" style="display:none"></div>
+        </div>
+        <div class="mobile-move-controls">
+          <button class="action-btn btn-move-up" type="button" title="Move Up"><i class="fas fa-arrow-up"></i></button>
+          <button class="action-btn btn-move-down" type="button" title="Move Down"><i class="fas fa-arrow-down"></i></button>
+        </div>
+      </div>
+      <div class="duration-block"><span class="editable-duration" contenteditable="true" data-id="" tabindex="0"></span> min</div>
+      <div class="actions-block">
+        <button class="action-btn btn-fixed" type="button" title="Toggle Fixed Time"><i class="fas fa-lock-open"></i></button>
+        <button class="action-btn btn-delete" type="button" title="Delete Task"><i class="fas fa-trash"></i></button>
+      </div>
+    </div>
+  </template>
+
+  <template id="tpl-gap">
+    <div class="gap-time" data-type="gap"><i class="fas fa-clock"></i></div>
+  </template>
+
+  <div class="main-content">
+    <div class="input-section">
+      <div class="form-group">
+        <label for="start-time"><i class="fas fa-clock"></i> Start Time</label>
+        <input type="time" id="start-time" value="09:00">
+      </div>
+
+      <div class="form-group">
+        <label for="task-name"><i class="fas fa-tasks"></i> Task Name</label>
+        <input type="text" id="task-name" placeholder="Enter task name">
+      </div>
+
+      <div class="form-group">
+        <label for="task-duration"><i class="fas fa-hourglass-half"></i> Duration (minutes)</label>
+        <input type="number" id="task-duration" min="1" value="30" placeholder="Duration">
+      </div>
+
+      <button id="add-task"><i class="fas fa-plus"></i> Add Task</button>
+      <p class="keyboard-hint">Press Enter to add quickly</p>
+
+      <div class="gap-settings" style="margin-top:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <div style="font-weight:700;color:var(--muted);font-size:0.9rem;"><i class="fas fa-stopwatch"></i> Time Gap Between Tasks</div>
+          <div style="font-weight:800;color:var(--muted);font-size:0.9rem;" id="gap-value">5 min</div>
+        </div>
+        <input type="range" id="gap-duration" min="0" max="30" value="5">
+        <div style="display:flex;justify-content:space-between;color:var(--muted);font-size:0.85rem;margin-top:4px;">
+          <span>0 min</span><span>30 min</span>
+        </div>
+      </div>
+
+      <div class="task-controls">
+        <button id="export-history" class="small-btn" title="Export entire history"><i class="fas fa-cloud-download-alt"></i> Export History</button>
+        <button id="import-history-btn" class="small-btn" title="Import history JSON"><i class="fas fa-cloud-upload-alt"></i> Import History</button>
+        <input type="file" id="import-history-file" accept="application/json" style="display:none" />
+        <button id="delete-all" class="small-btn" title="Delete all tasks for selected date"><i class="fas fa-trash-alt"></i> Delete Day</button>
+      </div>
+
+      <div style="margin-top:8px;color:var(--muted);font-size:0.85rem;">Tip: Importing history will replace your entire saved history. Keep a backup before importing.</div>
+    </div>
+
+    <div class="schedule-section">
+      <div style="display:flex;align-items:center;gap:10px;margin-top:6px;margin-bottom:6px;">
+        <h2 style="margin:0;color:var(--text);font-size:1.1rem;"><i class="fas fa-calendar-alt"></i> Schedule — <span id="schedule-for-date"></span></h2>
+        <input type="date" id="date-picker" style="width:140px;padding:6px;font-size:0.9rem;">
+        <div style="display:flex;gap:6px;margin-left:auto;align-items:center;">
+          <button id="prev-day" title="Previous day" class="small-btn"><i class="fas fa-chevron-left"></i></button>
+          <button id="today-btn" title="Today" class="small-btn">Today</button>
+          <button id="next-day" title="Next day" class="small-btn"><i class="fas fa-chevron-right"></i></button>
+        </div>
+      </div>
+      <div class="schedule" id="schedule">
+        <div class="schedule-header">
+          <div></div><div>Time</div><div>Task</div><div>Duration</div><div>Actions</div>
+        </div>
+        <div class="empty-schedule" id="empty-schedule">No tasks scheduled for this day. Add tasks to see your schedule.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal (shared) -->
+<div class="modal-backdrop" id="modal-backdrop" aria-hidden="true">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <h3 id="modal-title"></h3>
+    <div id="modal-body"></div>
+    <div class="modal-actions">
+      <button id="modal-cancel" class="small-btn">Cancel</button>
+      <button id="modal-ok" class="small-btn">OK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const DEBUG = true;
+
+  const HISTORY_KEY = 'taskSchedulerHistory_v1';
+  const LEGACY_SINGLE_KEY = 'taskSchedulerData_v1';
+  const TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/;
+
+  const $ = s => document.querySelector(s);
+  const $all = s => Array.from(document.querySelectorAll(s));
+  const pad2 = n => String(n).padStart(2,'0');
+  const todayDateStr = (d = new Date()) => `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+  const parseDateFromTime = (dateStr, timeStr='00:00') => {
+    const [y,m,d] = dateStr.split('-').map(Number);
+    const [hh,mm] = timeStr.split(':').map(Number);
+    const dt = new Date(); dt.setFullYear(y, m-1, d); dt.setHours(hh, mm, 0, 0); return dt;
+  };
+  const formatTime = dt => `${pad2(dt.getHours())}:${pad2(dt.getMinutes())}`;
+
+  const LS = {
+    get(k, fallback=null){ try { const raw = localStorage.getItem(k); return raw ? JSON.parse(raw) : fallback; } catch(e){ return fallback; } },
+    set(k,v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} }
+  };
+
+  const state = { 
+    history:{}, 
+    currentDate: todayDateStr(), 
+    tasks:[], 
+    gapDuration:5, 
+    activeInterval:null, 
+    isEditing: false,
+    scrollPosition: 0,
+    blurTimeoutId: null,
+    // Interaction tracking to avoid forcing scroll while the user is actively scrolling/touching
+    userIsInteracting: false,
+    lastInteractionTime: 0,
+    _interactionTimeout: null
+  };
+
+  function log(...args){ if(DEBUG && console && console.log) console.log(...args); }
+
+  // Simple modal utilities that return Promises instead of using browser prompt/confirm
+  const modalBackdrop = $('#modal-backdrop');
+  const modalTitle = $('#modal-title');
+  const modalBody = $('#modal-body');
+  const modalOk = $('#modal-ok');
+  const modalCancel = $('#modal-cancel');
+
+  function showModal(title, bodyHtml, opts = {}){
+    return new Promise((resolve) => {
+      modalTitle.textContent = title || '';
+      if (typeof bodyHtml === 'string') modalBody.innerHTML = bodyHtml;
+      else { modalBody.innerHTML = ''; modalBody.appendChild(bodyHtml); }
+
+      modalBackdrop.style.display = 'flex';
+      modalBackdrop.setAttribute('aria-hidden', 'false');
+
+      // prevent background scroll while modal is open
+      document.body.style.overflow = 'hidden';
+
+      function cleanup(){
+        modalBackdrop.style.display = 'none';
+        modalBackdrop.setAttribute('aria-hidden', 'true');
+        // restore background scrolling
+        document.body.style.overflow = '';
+        modalOk.removeEventListener('click', onOk);
+        modalCancel.removeEventListener('click', onCancel);
+      }
+      function onOk(){ cleanup(); resolve({ok:true, value: inputEl ? inputEl.value : undefined}); }
+      function onCancel(){ cleanup(); resolve({ok:false, value: null}); }
+
+      modalOk.addEventListener('click', onOk);
+      modalCancel.addEventListener('click', onCancel);
+
+      let inputEl = null;
+      if (opts.prompt) {
+        inputEl = document.createElement('input');
+        inputEl.className = 'modal-input';
+        inputEl.type = 'text';
+        inputEl.value = opts.default || '';
+        modalBody.appendChild(inputEl);
+        
+      }
+    });
+  }
+
+  async function showConfirm(message){ const r = await showModal('Confirm', `<div>${message}</div>`); return !!r.ok; }
+  async function showPrompt(message, def=''){ const r = await showModal('Input', `<div>${message}</div>`, {prompt:true, default:def}); return r.ok ? r.value : null; }
+
+  // safe scroll helper: only scroll when difference is meaningful and user isn't interacting
+  function safeScrollTo(y){
+    try {
+      const diff = Math.abs((window.scrollY || window.pageYOffset) - (y || 0));
+      const since = Date.now() - (state.lastInteractionTime || 0);
+      if (diff > 120 && since > 800) {
+        window.scrollTo({ top: y, left: 0, behavior: 'smooth' });
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  function normalizeTask(t) {
+    return {
+      id: t.id || (Date.now() + Math.floor(Math.random()*1000)),
+      name: String(t.name || '').trim(),
+      duration: Number(t.duration || 0),
+      isFixed: Boolean(t.isFixed),
+      fixedStartTime: t.fixedStartTime || null,
+      startTime: t.startTime || null,
+      endTime: t.endTime || null
+    };
+  }
+
+  function loadHistory() {
+    const raw = LS.get(HISTORY_KEY, null);
+    if (raw && typeof raw === 'object') { state.history = raw; return; }
+    const legacy = LS.get(LEGACY_SINGLE_KEY, null);
+    if (legacy && legacy.tasks) {
+      state.history = {};
+      state.history[state.currentDate] = { tasks: legacy.tasks.map(normalizeTask), gapDuration: Number(legacy.gapDuration) || 5, startTime: legacy.startTime || '09:00' };
+      LS.set(HISTORY_KEY, state.history);
+    }
+  }
+  function saveHistory(){ LS.set(HISTORY_KEY, state.history); }
+  function saveCurrentDay(){ state.history[state.currentDate] = { tasks: state.tasks.map(normalizeTask), gapDuration: state.gapDuration, startTime: $('#start-time').value || '09:00' }; saveHistory(); }
+
+  function loadDay(dateStr) {
+    state.currentDate = dateStr;
+    $('#date-picker').value = dateStr;
+    $('#schedule-for-date').textContent = dateStr;
+    const dayData = state.history[dateStr];
+    if (dayData) {
+      state.tasks = Array.isArray(dayData.tasks) ? dayData.tasks.map(normalizeTask) : [];
+      state.gapDuration = Number(dayData.gapDuration) || 0;
+      $('#gap-duration').value = state.gapDuration;
+      $('#gap-value').textContent = `${state.gapDuration} min`;
+      if (dayData.startTime && TIME_RE.test(dayData.startTime)) $('#start-time').value = dayData.startTime;
+    } else {
+      state.tasks = [];
+      state.gapDuration = Number($('#gap-duration').value) || 5;
+      $('#gap-value').textContent = `${state.gapDuration} min`;
+    }
+    calculateSchedule();
+    restartActiveIndicator();
+
+  // Prevent action-button focus jumps on mobile by handling touch events for buttons.
+  // This prevents the browser from focusing the button (which can trigger viewport shifts)
+  // while still triggering the button action.
+  (function(){
+    let activeBtn = null;
+    scheduleEl.addEventListener('touchstart', (e) => {
+      if (window.innerWidth > 968) return;
+      const btn = e.target.closest('.action-btn');
+      if (!btn) return;
+      // prevent default so the browser doesn't focus the button and shift viewport
+      e.preventDefault();
+      activeBtn = btn;
+      btn.classList.add('touch-pressed');
+    }, { passive: false });
+
+    scheduleEl.addEventListener('touchend', (e) => {
+      if (!activeBtn) return;
+      // trigger the click handler programmatically
+      try { activeBtn.click(); } catch (err) { }
+      activeBtn.classList.remove('touch-pressed');
+      activeBtn = null;
+    }, { passive: true });
+
+    // also handle touchcancel
+    scheduleEl.addEventListener('touchcancel', () => {
+      if (activeBtn) { activeBtn.classList.remove('touch-pressed'); activeBtn = null; }
+    }, { passive: true });
+  })();
+  }
+
+  function changeDateBy(delta) {
+    const [y,m,d] = state.currentDate.split('-').map(Number);
+    const dt = new Date(y, m-1, d); dt.setDate(dt.getDate() + delta);
+    loadDay(todayDateStr(dt));
+  }
+
+  const tplItem = $('#tpl-schedule-item');
+  const tplGap = $('#tpl-gap');
+  const scheduleEl = $('#schedule');
+  const emptyScheduleEl = $('#empty-schedule');
+
+  function calculateSchedule() {
+    // Don't recalculate if we're currently editing
+    if (state.isEditing) return;
+    
+    const header = scheduleEl.querySelector('.schedule-header');
+    scheduleEl.innerHTML = '';
+    scheduleEl.appendChild(header);
+
+    if (!state.tasks || state.tasks.length === 0) {
+      scheduleEl.appendChild(emptyScheduleEl);
+      emptyScheduleEl.style.display = 'block';
+      saveCurrentDay();
+      return;
+    } else emptyScheduleEl.style.display = 'none';
+
+    let cur = parseDateFromTime(state.currentDate, $('#start-time').value || '09:00');
+    const frag = document.createDocumentFragment();
+
+    state.tasks.forEach((task, idx) => {
+      let taskStart, taskEnd;
+      if (task.isFixed && task.fixedStartTime && TIME_RE.test(task.fixedStartTime)) {
+        taskStart = parseDateFromTime(state.currentDate, task.fixedStartTime);
+        taskEnd = new Date(taskStart.getTime()); taskEnd.setMinutes(taskEnd.getMinutes() + Number(task.duration));
+        cur = new Date(taskEnd.getTime());
+      } else {
+        taskStart = new Date(cur.getTime());
+        taskEnd = new Date(taskStart.getTime()); taskEnd.setMinutes(taskEnd.getMinutes() + Number(task.duration));
+        cur = new Date(taskEnd.getTime());
+      }
+
+      task.startTime = formatTime(taskStart);
+      task.endTime = formatTime(taskEnd);
+
+      const node = tplItem.content.cloneNode(true);
+      const el = node.querySelector('.schedule-item');
+      el.dataset.id = task.id;
+      el.dataset.start = task.startTime;
+      el.dataset.end = task.endTime;
+
+      el.classList.toggle('fixed-time', !!task.isFixed);
+      el.querySelector('.time-block').innerHTML = `${task.startTime}<br>${task.endTime}`;
+      const nameEl = el.querySelector('.task-name');
+      nameEl.textContent = task.name;
+      nameEl.dataset.id = task.id;
+      el.querySelector('.mobile-time').textContent = `${task.startTime} - ${task.endTime}`;
+      const fixedNote = el.querySelector('.fixed-note');
+      fixedNote.style.display = task.isFixed && task.fixedStartTime ? 'block' : 'none';
+      fixedNote.textContent = task.isFixed && task.fixedStartTime ? `Fixed: ${task.fixedStartTime}` : '';
+      const durEl = el.querySelector('.editable-duration');
+      durEl.textContent = task.duration;
+      durEl.dataset.id = task.id;
+
+      // Add event listeners for desktop layout
+      nameEl.addEventListener('focus', handleFocus);
+      nameEl.addEventListener('blur', handleBlur);
+      durEl.addEventListener('focus', handleFocus);
+      durEl.addEventListener('blur', handleBlur);
+
+      const lockIcon = el.querySelector('.btn-fixed i');
+      if (lockIcon) {
+        lockIcon.classList.toggle('fa-lock', !!task.isFixed);
+        lockIcon.classList.toggle('fa-lock-open', !task.isFixed);
+      }
+
+      // Create mobile-optimized layout
+      if (window.innerWidth <= 968) {
+        const taskHeader = document.createElement('div');
+        taskHeader.className = 'task-header';
+        
+        const taskNameContainer = document.createElement('div');
+        taskNameContainer.style.flex = '1';
+        
+        const nameElMobile = nameEl.cloneNode(true);
+        nameElMobile.addEventListener('focus', handleFocus);
+        nameElMobile.addEventListener('blur', handleBlur);
+        taskNameContainer.appendChild(nameElMobile);
+        
+        // Create mobile actions container (right side) - horizontal layout
+        const mobileActions = document.createElement('div');
+        mobileActions.className = 'mobile-actions';
+        
+        // Add move controls
+        const moveControls = document.createElement('div');
+        moveControls.className = 'mobile-move-controls';
+        moveControls.innerHTML = `
+          <button class="action-btn btn-move-up" type="button" title="Move Up"><i class="fas fa-arrow-up"></i></button>
+          <button class="action-btn btn-move-down" type="button" title="Move Down"><i class="fas fa-arrow-down"></i></button>
+        `;
+        
+        // Add action buttons
+        const actionsBlock = document.createElement('div');
+        actionsBlock.className = 'actions-block';
+        const lockIconClass = task.isFixed ? 'fa-lock' : 'fa-lock-open';
+        actionsBlock.innerHTML = `
+          <button class="action-btn btn-fixed" type="button" title="Toggle Fixed Time"><i class="fas ${lockIconClass}"></i></button>
+          <button class="action-btn btn-delete" type="button" title="Delete Task"><i class="fas fa-trash"></i></button>
+        `;
+        
+        mobileActions.appendChild(moveControls);
+        mobileActions.appendChild(actionsBlock);
+        
+        taskHeader.appendChild(taskNameContainer);
+        taskHeader.appendChild(mobileActions);
+        
+        // Task details (time and duration below)
+        const taskDetails = document.createElement('div');
+        taskDetails.className = 'task-details';
+        
+        const timeDisplay = document.createElement('div');
+        timeDisplay.className = 'time-display';
+        timeDisplay.innerHTML = `<i class="fas fa-clock" style="font-size:0.8rem;"></i> ${task.startTime} - ${task.endTime}`;
+        
+        const durationBlock = document.createElement('div');
+        durationBlock.className = 'duration-block';
+        
+        const durSpan = document.createElement('span');
+        durSpan.className = 'editable-duration';
+        durSpan.textContent = task.duration;
+        durSpan.dataset.id = task.id;
+        durSpan.contentEditable = true;
+        durSpan.addEventListener('focus', handleFocus);
+        durSpan.addEventListener('blur', handleBlur);
+        
+        durationBlock.appendChild(durSpan);
+        durationBlock.appendChild(document.createTextNode(' min'));
+        
+        taskDetails.appendChild(timeDisplay);
+        taskDetails.appendChild(durationBlock);
+        
+        // Clear the existing content and add our mobile-optimized structure
+        el.innerHTML = '';
+        el.appendChild(taskHeader);
+        el.appendChild(taskDetails);
+        
+        // Add fixed note if needed
+        if (task.isFixed && task.fixedStartTime) {
+          const fixedNoteMobile = document.createElement('div');
+          fixedNoteMobile.className = 'fixed-note';
+          fixedNoteMobile.textContent = `Fixed: ${task.fixedStartTime}`;
+          el.appendChild(fixedNoteMobile);
+        }
+      }
+
+      frag.appendChild(node);
+
+      if (idx < state.tasks.length - 1 && state.gapDuration > 0) {
+        const gapStart = new Date(cur.getTime());
+        const gapEnd = new Date(gapStart.getTime()); gapEnd.setMinutes(gapEnd.getMinutes() + state.gapDuration);
+        const gapNode = tplGap.content.cloneNode(true);
+        const gapEl = gapNode.querySelector('.gap-time');
+        gapEl.dataset.start = formatTime(gapStart);
+        gapEl.dataset.end = formatTime(gapEnd);
+        gapEl.innerHTML = `<i class="fas fa-clock"></i> ${state.gapDuration} min gap: ${gapEl.dataset.start} - ${gapEl.dataset.end}`;
+        frag.appendChild(gapNode);
+        cur = new Date(gapEnd.getTime());
+      }
+    });
+
+    scheduleEl.appendChild(frag);
+    saveCurrentDay();
+  }
+
+  function handleFocus(e) {
+    log('focus', e.target);
+    state.isEditing = true;
+    
+    // Save scroll position when focusing on an editable element
+    state.scrollPosition = window.scrollY || document.documentElement.scrollTop;
+    
+    // Clear any pending blur timeout
+    if (state.blurTimeoutId) {
+      clearTimeout(state.blurTimeoutId);
+      state.blurTimeoutId = null;
+    }
+  }
+
+  function handleBlur(e) {
+    log('blur', e.target);
+    const el = e.target;
+    
+    // Clear any existing timeout
+    if (state.blurTimeoutId) {
+      clearTimeout(state.blurTimeoutId);
+    }
+    
+    // Use a timeout to allow the blur to complete before recalculating
+    state.blurTimeoutId = setTimeout(() => {
+      state.isEditing = false;
+      
+      if (el.classList.contains('task-name')) {
+        const id = Number(el.dataset.id);
+        const t = state.tasks.find(x => x.id === id);
+        if (t) {
+          t.name = el.textContent.trim() || t.name;
+          calculateSchedule();
+          saveCurrentDay();
+        }
+      } else if (el.classList.contains('editable-duration')) {
+        const id = Number(el.dataset.id);
+        const t = state.tasks.find(x => x.id === id);
+        const newD = parseInt(el.textContent.trim());
+        if (t) {
+          if (!isNaN(newD) && newD > 0) {
+            t.duration = Number(newD);
+            calculateSchedule();
+            saveCurrentDay();
+          } else {
+            el.textContent = t.duration;
+          }
+        }
+      }
+      
+      // Restore scroll position after processing blur, but only if the user isn't actively interacting.
+      const since = Date.now() - (state.lastInteractionTime || 0);
+      if (since > 800) safeScrollTo(state.scrollPosition);
+
+      state.blurTimeoutId = null;
+    }, 300); // 300ms delay to ensure the keyboard is fully dismissed
+  }
+
+  function addTask(name, duration, isFixed=false, fixedStartTime=null) {
+    state.tasks.push({
+      id: Date.now() + Math.floor(Math.random()*1000),
+      name: String(name).trim(),
+      duration: Number(duration),
+      isFixed: Boolean(isFixed),
+      fixedStartTime: fixedStartTime || null,
+      startTime: null, endTime: null
+    });
+    calculateSchedule();
+  }
+
+  async function deleteTask(id) {
+    const ok = await showConfirm('Are you sure you want to delete this task?');
+    if (!ok) return;
+    state.tasks = state.tasks.filter(t => t.id !== id);
+    calculateSchedule();
+    saveCurrentDay();
+  }
+
+  async function toggleFixedTime(id) {
+    const t = state.tasks.find(x => x.id === id);
+    if (!t) return;
+    if (t.isFixed) {
+      const ok = await showConfirm('Remove fixed time for this task?');
+      if (!ok) return;
+      t.isFixed = false; t.fixedStartTime = null;
+      calculateSchedule(); saveCurrentDay();
+    } else {
+      const input = await showPrompt('Enter fixed start time (HH:MM):', t.fixedStartTime || '12:00');
+      if (input === null) return;
+      if (TIME_RE.test(input)) {
+        t.isFixed = true; t.fixedStartTime = input;
+        calculateSchedule(); saveCurrentDay();
+      } else {
+        // show a quick alert-like modal
+        await showModal('Invalid', '<div>Time must be in HH:MM (24-hour) format.</div>');
+      }
+    }
+  }
+
+  async function clearDay() {
+    if (!state.tasks || state.tasks.length === 0) {
+      await showModal('Info', '<div>No tasks to delete for this day.</div>');
+      return;
+    }
+    const ok = await showConfirm('Delete ALL tasks for this date? This cannot be undone.');
+    if (!ok) return;
+    state.tasks = [];
+    delete state.history[state.currentDate];
+    calculateSchedule();
+    saveHistory();
+    await showModal('Done', '<div>Day cleared and saved.</div>');
+  }
+
+  // Move task up or down in the list
+  function moveTask(id, direction) {
+    const index = state.tasks.findIndex(t => t.id === id);
+    if (index === -1) return;
+    
+    // Save current scroll position
+    const scrollPosition = window.scrollY || document.documentElement.scrollTop;
+    
+    if (direction === 'up' && index > 0) {
+        // Swap with previous task
+        [state.tasks[index - 1], state.tasks[index]] = [state.tasks[index], state.tasks[index - 1]];
+        calculateSchedule();
+        saveCurrentDay();
+    } else if (direction === 'down' && index < state.tasks.length - 1) {
+        // Swap with next task
+        [state.tasks[index], state.tasks[index + 1]] = [state.tasks[index + 1], state.tasks[index]];
+        calculateSchedule();
+        saveCurrentDay();
+    }
+    
+    // Restore scroll position after DOM update, but only if user isn't interacting
+    const since = Date.now() - (state.lastInteractionTime || 0);
+    if (since > 800) safeScrollTo(scrollPosition);
+  }
+
+  // Desktop drag support
+  let draggedEl = null;
+  scheduleEl.addEventListener('dragstart', (e) => {
+    if (window.innerWidth <= 968) return; // Disable drag on mobile
+    const row = e.target.closest('.schedule-item');
+    if (!row) return;
+    draggedEl = row;
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', row.dataset.id); } catch(err){}
+    row.style.opacity = '0.5';
+    log('dragstart', row.dataset.id);
+  });
+  scheduleEl.addEventListener('dragover', (e) => { 
+    if (window.innerWidth <= 968) return; // Disable drag on mobile
+    e.preventDefault(); 
+    e.dataTransfer.dropEffect = 'move'; 
+  });
+  scheduleEl.addEventListener('drop', (e) => {
+    if (window.innerWidth <= 968) return; // Disable drag on mobile
+    e.preventDefault();
+    const target = e.target.closest('.schedule-item');
+    if (!draggedEl || !target || draggedEl === target) return;
+    const draggedId = Number(draggedEl.dataset.id);
+    const targetId = Number(target.dataset.id);
+    const from = state.tasks.findIndex(t => t.id === draggedId);
+    const to = state.tasks.findIndex(t => t.id === targetId);
+    if (from === -1 || to === -1) return;
+    const [removed] = state.tasks.splice(from,1);
+    state.tasks.splice(to,0,removed);
+    calculateSchedule(); saveCurrentDay();
+    log('drop reorder', draggedId, '->', to);
+  });
+  scheduleEl.addEventListener('dragend', (e) => { 
+    if (window.innerWidth <= 968) return; // Disable drag on mobile
+    if (draggedEl) draggedEl.style.opacity = '1'; draggedEl = null; 
+  });
+
+  // delegated UI click handlers
+  scheduleEl.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.action-btn');
+    if (!btn) return;
+
+    // Prevent default behavior to avoid scrolling
+    e.preventDefault();
+
+    const row = btn.closest('.schedule-item');
+    const id = row ? Number(row.dataset.id) : null;
+
+    // Save scroll position so we can restore it after any prompts/DOM updates.
+    const scrollPosition = window.scrollY || document.documentElement.scrollTop;
+
+    try {
+      if (btn.classList.contains('btn-delete')) {
+        await deleteTask(id);
+      } else if (btn.classList.contains('btn-fixed')) {
+        await toggleFixedTime(id);
+      } else if (btn.classList.contains('btn-move-up')) {
+        moveTask(id, 'up');
+      } else if (btn.classList.contains('btn-move-down')) {
+        moveTask(id, 'down');
+      }
+    } finally {
+      // Restore scroll position after the action completes to avoid jumps (mobile browsers
+      // often adjust viewport on focus/blur or when dialogs close). Also blur the button
+      // only after restoring scroll to avoid triggering additional scrolling.
+      const since = Date.now() - (state.lastInteractionTime || 0);
+      if (since > 300) safeScrollTo(scrollPosition);
+      try { btn.blur(); } catch (err) {}
+    }
+  });
+
+  // Enter handling
+  document.addEventListener('keypress', (e) => {
+    if (e.key !== 'Enter') return;
+    const ce = e.target.closest && e.target.closest('[contenteditable="true"]');
+    if (ce) { e.preventDefault(); ce.blur(); return; }
+    const active = document.activeElement;
+    if (active === $('#task-name') || active === $('#task-duration')) { e.preventDefault(); $('#add-task').click(); }
+  });
+
+  function updateActiveIndicator() {
+    const isToday = (state.currentDate === todayDateStr());
+    $all('.schedule-item.active, .gap-time.active').forEach(el => el.classList.remove('active'));
+    if (!isToday) return;
+    const now = new Date();
+    const elems = Array.from(document.querySelectorAll('.schedule-item, .gap-time'));
+    for (const el of elems) {
+      const start = el.dataset.start;
+      const end = el.dataset.end;
+      if (!start || !end) continue;
+      const s = parseDateFromTime(state.currentDate, start.trim());
+      const e = parseDateFromTime(state.currentDate, end.trim());
+      if (now >= s && now < e) { el.classList.add('active'); break; }
+    }
+  }
+  function restartActiveIndicator() { if (state.activeInterval) clearInterval(state.activeInterval); updateActiveIndicator(); state.activeInterval = setInterval(updateActiveIndicator, 10000); }
+
+  function exportHistory() { const blob = new Blob([JSON.stringify(state.history, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `tasks-history-${todayDateStr()}.json`; document.body.appendChild(link); link.click(); setTimeout(() => { URL.revokeObjectURL(link.href); document.body.removeChild(link); }, 1000); }
+
+  // Import only supports full history imports now
+  async function doImport(parsed, asHistory=false) {
+    const isDay = parsed && Array.isArray(parsed.tasks);
+    const isHistory = parsed && typeof parsed === 'object' && Object.values(parsed).some(v => v && Array.isArray(v.tasks));
+    if (asHistory || isHistory) {
+      const ok = await showConfirm('Importing will REPLACE your current saved history. Continue?');
+      if (!ok) return false;
+      state.history = parsed; saveHistory(); loadDay(state.currentDate); await showModal('Done', '<div>History import successful.</div>'); return true;
+    }
+
+    if (isDay) {
+      await showModal('Unsupported', '<div>Single-day import is no longer supported. Please import a full history JSON file.</div>');
+      return false;
+    }
+    await showModal('Invalid', '<div>Invalid JSON format for import. Expected a history export.</div>');
+    return false;
+  }
+
+  function handleImportFileInput(file, asHistory=true) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        const parsed = JSON.parse(evt.target.result);
+        await doImport(parsed, asHistory);
+      } catch(err) { console.error(err); await showModal('Error', '<div>Failed to parse JSON file.</div>'); }
+    };
+    reader.readAsText(file);
+  }
+
+  // UI wiring
+  document.addEventListener('DOMContentLoaded', () => {
+    const addBtn = $('#add-task'), taskName = $('#task-name'), taskDur = $('#task-duration');
+    const gapInput = $('#gap-duration'), gapVal = $('#gap-value'), startTime = $('#start-time');
+    const importHistoryFile = $('#import-history-file');
+
+    const dp = $('#date-picker'); dp.value = todayDateStr();
+    loadHistory(); loadDay(dp.value);
+
+    // Handle window resize to recalculate layout
+    window.addEventListener('resize', calculateSchedule);
+
+    $('#date-picker').addEventListener('change', (e) => { loadDay(e.target.value); saveCurrentDay(); });
+    $('#prev-day').addEventListener('click', () => changeDateBy(-1));
+    $('#next-day').addEventListener('click', () => changeDateBy(1));
+    $('#today-btn').addEventListener('click', () => loadDay(todayDateStr()));
+
+    addBtn.addEventListener('click', () => {
+      const name = taskName.value.trim(), duration = parseInt(taskDur.value);
+      if (name && duration > 0) { addTask(name, duration); taskName.value = ''; taskDur.value = '30'; taskName.focus(); saveCurrentDay(); }
+      else showModal('Invalid', '<div>Please enter a valid task name and duration.</div>');
+    });
+
+    gapInput.addEventListener('input', (e) => { state.gapDuration = parseInt(e.target.value); gapVal.textContent = `${state.gapDuration} min`; calculateSchedule(); saveCurrentDay(); });
+    startTime.addEventListener('change', () => { calculateSchedule(); saveCurrentDay(); });
+
+    $('#export-history').addEventListener('click', exportHistory);
+
+    $('#import-history-btn').addEventListener('click', () => importHistoryFile.click());
+    importHistoryFile.addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; handleImportFileInput(f, true); e.target.value = ''; });
+
+    $('#delete-all').addEventListener('click', clearDay);
+
+    window.addEventListener('beforeunload', () => { saveCurrentDay(); saveHistory(); });
+    log('UI wired — per-day import/export removed; history-only import/export (debug mode).');
+  });
+
+  // Throttle helper (simple)
+  function throttle(fn, wait){ let timer = null; return function(...args){ if (timer) return; timer = setTimeout(()=>{ fn.apply(this, args); timer = null; }, wait); }; }
+
+  const throttledUpdateActiveIndicator = throttle(updateActiveIndicator, 200);
+
+  function markInteraction(){
+    state.userIsInteracting = true;
+    state.lastInteractionTime = Date.now();
+    if (state._interactionTimeout) clearTimeout(state._interactionTimeout);
+    state._interactionTimeout = setTimeout(() => { state.userIsInteracting = false; }, 900);
+  }
+
+  // Track touch/scroll/wheel so we don't fight the user's scrolling by forcing scrollTo.
+  window.addEventListener('touchstart', markInteraction, {passive:true});
+  window.addEventListener('touchmove', markInteraction, {passive:true});
+  window.addEventListener('touchend', markInteraction, {passive:true});
+  window.addEventListener('wheel', markInteraction, {passive:true});
+  window.addEventListener('scroll', () => { markInteraction(); throttledUpdateActiveIndicator(); }, {passive:true});
+
+  restartActiveIndicator();
+
+})();
+</script>
+</body>
+</html>
