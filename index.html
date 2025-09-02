@@ -320,15 +320,48 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
   async function showConfirm(message){ const r = await showModal('Confirm', `<div>${message}</div>`); return !!r.ok; }
   async function showPrompt(message, def=''){ const r = await showModal('Input', `<div>${message}</div>`, {prompt:true, default:def}); return r.ok ? r.value : null; }
 
+  // Enhanced scroll position management
+  let savedScrollPosition = 0;
+  let isScrolling = false;
+  let scrollTimeout = null;
+  
   // safe scroll helper: only scroll when difference is meaningful and user isn't interacting
   function safeScrollTo(y){
     try {
+      // Don't scroll if user is currently scrolling or recently scrolled
+      if (isScrolling || (Date.now() - state.lastInteractionTime) < 1000) {
+        return;
+      }
+      
       const diff = Math.abs((window.scrollY || window.pageYOffset) - (y || 0));
       const since = Date.now() - (state.lastInteractionTime || 0);
       if (diff > 120 && since > 800) {
         window.scrollTo({ top: y, left: 0, behavior: 'smooth' });
       }
     } catch (e) { /* ignore */ }
+  }
+  
+  // Save current scroll position
+  function saveScrollPosition() {
+    savedScrollPosition = window.scrollY || document.documentElement.scrollTop;
+    return savedScrollPosition;
+  }
+  
+  // Restore saved scroll position with additional checks
+  function restoreScrollPosition(position = null) {
+    const targetPosition = position !== null ? position : savedScrollPosition;
+    
+    // Additional check to ensure we don't scroll if user is interacting
+    if ((Date.now() - state.lastInteractionTime) < 1000) {
+      return;
+    }
+    
+    // Small delay to ensure DOM is ready
+    setTimeout(() => {
+      if (targetPosition >= 0) {
+        window.scrollTo({ top: targetPosition, left: 0, behavior: 'instant' });
+      }
+    }, 50);
   }
 
   function normalizeTask(t) {
@@ -380,27 +413,65 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
   // while still triggering the button action.
   (function(){
     let activeBtn = null;
+    let touchStartY = 0;
+    let touchStartTime = 0;
+    
     scheduleEl.addEventListener('touchstart', (e) => {
       if (window.innerWidth > 968) return;
       const btn = e.target.closest('.action-btn');
       if (!btn) return;
+      
+      // Save touch start position and time for scroll detection
+      touchStartY = e.touches[0].clientY;
+      touchStartTime = Date.now();
+      
       // prevent default so the browser doesn't focus the button and shift viewport
       e.preventDefault();
       activeBtn = btn;
       btn.classList.add('touch-pressed');
+      
+      // Mark interaction to prevent scroll jumps
+      markInteraction();
     }, { passive: false });
 
+    scheduleEl.addEventListener('touchmove', (e) => {
+      if (!activeBtn || window.innerWidth > 968) return;
+      
+      // If user is scrolling, cancel the button press
+      const touchY = e.touches[0].clientY;
+      const deltaY = Math.abs(touchY - touchStartY);
+      const timeElapsed = Date.now() - touchStartTime;
+      
+      // If moved more than 10px in 200ms, consider it a scroll
+      if (deltaY > 10 && timeElapsed < 200) {
+        activeBtn.classList.remove('touch-pressed');
+        activeBtn = null;
+      }
+    }, { passive: true });
+
     scheduleEl.addEventListener('touchend', (e) => {
-      if (!activeBtn) return;
+      if (!activeBtn || window.innerWidth > 968) return;
+      
+      // Save scroll position before triggering click
+      const scrollPosition = saveScrollPosition();
+      
       // trigger the click handler programmatically
       try { activeBtn.click(); } catch (err) { }
       activeBtn.classList.remove('touch-pressed');
       activeBtn = null;
+      
+      // Restore scroll position after a short delay
+      setTimeout(() => {
+        restoreScrollPosition(scrollPosition);
+      }, 150);
     }, { passive: true });
 
     // also handle touchcancel
     scheduleEl.addEventListener('touchcancel', () => {
-      if (activeBtn) { activeBtn.classList.remove('touch-pressed'); activeBtn = null; }
+      if (activeBtn) { 
+        activeBtn.classList.remove('touch-pressed'); 
+        activeBtn = null; 
+      }
     }, { passive: true });
   })();
   }
@@ -416,20 +487,33 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
   const scheduleEl = $('#schedule');
   const emptyScheduleEl = $('#empty-schedule');
 
+  // Optimized calculateSchedule function to minimize DOM reflows
   function calculateSchedule() {
     // Don't recalculate if we're currently editing
     if (state.isEditing) return;
     
+    // Save scroll position before DOM updates
+    const scrollPos = saveScrollPosition();
+    
     const header = scheduleEl.querySelector('.schedule-header');
-    scheduleEl.innerHTML = '';
-    scheduleEl.appendChild(header);
+    
+    // Use a document fragment to minimize reflows
+    const newContent = document.createDocumentFragment();
+    newContent.appendChild(header.cloneNode(true));
 
     if (!state.tasks || state.tasks.length === 0) {
-      scheduleEl.appendChild(emptyScheduleEl);
-      emptyScheduleEl.style.display = 'block';
+      const emptyClone = emptyScheduleEl.cloneNode(true);
+      emptyClone.style.display = 'block';
+      newContent.appendChild(emptyClone);
+      scheduleEl.innerHTML = '';
+      scheduleEl.appendChild(newContent);
       saveCurrentDay();
+      // Restore scroll position after DOM update
+      restoreScrollPosition(scrollPos);
       return;
-    } else emptyScheduleEl.style.display = 'none';
+    } else {
+      emptyScheduleEl.style.display = 'none';
+    }
 
     let cur = parseDateFromTime(state.currentDate, $('#start-time').value || '09:00');
     const frag = document.createDocumentFragment();
@@ -574,8 +658,18 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
       }
     });
 
-    scheduleEl.appendChild(frag);
+    newContent.appendChild(frag);
+    
+    // Replace content in one operation to minimize reflows
+    scheduleEl.innerHTML = '';
+    scheduleEl.appendChild(newContent);
+    
     saveCurrentDay();
+    
+    // Restore scroll position after DOM update
+    setTimeout(() => {
+      restoreScrollPosition(scrollPos);
+    }, 100);
   }
 
   function handleFocus(e) {
@@ -753,7 +847,7 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
     if (draggedEl) draggedEl.style.opacity = '1'; draggedEl = null; 
   });
 
-  // delegated UI click handlers
+  // delegated UI click handlers with enhanced scroll protection
   scheduleEl.addEventListener('click', async (e) => {
     const btn = e.target.closest('.action-btn');
     if (!btn) return;
@@ -761,11 +855,11 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
     // Prevent default behavior to avoid scrolling
     e.preventDefault();
 
+    // Save scroll position before any operations
+    const scrollPosition = saveScrollPosition();
+
     const row = btn.closest('.schedule-item');
     const id = row ? Number(row.dataset.id) : null;
-
-    // Save scroll position so we can restore it after any prompts/DOM updates.
-    const scrollPosition = window.scrollY || document.documentElement.scrollTop;
 
     try {
       if (btn.classList.contains('btn-delete')) {
@@ -782,24 +876,57 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
       // often adjust viewport on focus/blur or when dialogs close). Also blur the button
       // only after restoring scroll to avoid triggering additional scrolling.
       const since = Date.now() - (state.lastInteractionTime || 0);
-      if (since > 300) safeScrollTo(scrollPosition);
-      try { btn.blur(); } catch (err) {}
+      if (since > 300) {
+        setTimeout(() => {
+          restoreScrollPosition(scrollPosition);
+          try { btn.blur(); } catch (err) {}
+        }, 100);
+      } else {
+        try { btn.blur(); } catch (err) {}
+      }
     }
   });
 
-  // Enter handling
+  // Enter handling with scroll protection
   document.addEventListener('keypress', (e) => {
     if (e.key !== 'Enter') return;
     const ce = e.target.closest && e.target.closest('[contenteditable="true"]');
-    if (ce) { e.preventDefault(); ce.blur(); return; }
+    if (ce) { 
+      e.preventDefault(); 
+      // Save scroll position before blurring
+      const scrollPosition = saveScrollPosition();
+      ce.blur(); 
+      // Restore scroll position after a short delay
+      setTimeout(() => {
+        restoreScrollPosition(scrollPosition);
+      }, 100);
+      return; 
+    }
     const active = document.activeElement;
-    if (active === $('#task-name') || active === $('#task-duration')) { e.preventDefault(); $('#add-task').click(); }
+    if (active === $('#task-name') || active === $('#task-duration')) { 
+      e.preventDefault(); 
+      // Save scroll position before clicking add button
+      const scrollPosition = saveScrollPosition();
+      $('#add-task').click(); 
+      // Restore scroll position after a short delay
+      setTimeout(() => {
+        restoreScrollPosition(scrollPosition);
+      }, 100);
+    }
   });
 
+  // Improved updateActiveIndicator to prevent scroll jumps
   function updateActiveIndicator() {
+    // Save current scroll position
+    const scrollPos = saveScrollPosition();
+    
     const isToday = (state.currentDate === todayDateStr());
     $all('.schedule-item.active, .gap-time.active').forEach(el => el.classList.remove('active'));
-    if (!isToday) return;
+    if (!isToday) {
+      // Restore scroll position if not today
+      restoreScrollPosition(scrollPos);
+      return;
+    }
     const now = new Date();
     const elems = Array.from(document.querySelectorAll('.schedule-item, .gap-time'));
     for (const el of elems) {
@@ -810,6 +937,11 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
       const e = parseDateFromTime(state.currentDate, end.trim());
       if (now >= s && now < e) { el.classList.add('active'); break; }
     }
+    
+    // Restore scroll position after updating active indicator
+    setTimeout(() => {
+      restoreScrollPosition(scrollPos);
+    }, 50);
   }
   function restartActiveIndicator() { if (state.activeInterval) clearInterval(state.activeInterval); updateActiveIndicator(); state.activeInterval = setInterval(updateActiveIndicator, 10000); }
 
