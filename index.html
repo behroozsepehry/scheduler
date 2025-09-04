@@ -148,6 +148,7 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
       </div>
       <div class="duration-block"><span class="editable-duration" contenteditable="true" data-id="" tabindex="0"></span> min</div>
       <div class="actions-block">
+        <button class="action-btn btn-punt" type="button" title="Move to Next Day"><i class="fas fa-arrow-right"></i></button>
         <button class="action-btn btn-fixed" type="button" title="Toggle Fixed Time"><i class="fas fa-lock-open"></i></button>
         <button class="action-btn btn-delete" type="button" title="Delete Task"><i class="fas fa-trash"></i></button>
       </div>
@@ -594,6 +595,7 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
         actionsBlock.className = 'actions-block';
         const lockIconClass = task.isFixed ? 'fa-lock' : 'fa-lock-open';
         actionsBlock.innerHTML = `
+          <button class="action-btn btn-punt" type="button" title="Move to Next Day"><i class="fas fa-arrow-right"></i></button>
           <button class="action-btn btn-fixed" type="button" title="Toggle Fixed Time"><i class="fas ${lockIconClass}"></i></button>
           <button class="action-btn btn-delete" type="button" title="Delete Task"><i class="fas fa-trash"></i></button>
         `;
@@ -785,6 +787,179 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
     await showModal('Done', '<div>Day cleared and saved.</div>');
   }
 
+  // Punt task to next day with comprehensive error handling and user feedback
+  async function puntTask(taskId) {
+    // Input validation
+    if (!taskId || typeof taskId !== 'number' || taskId <= 0) {
+      console.warn('puntTask: Invalid taskId provided:', taskId);
+      await showModal('Error', '<div>Invalid task selected. Please refresh and try again.</div>');
+      return;
+    }
+
+    // Task lookup with validation
+    const task = state.tasks.find(t => t.id === taskId);
+    if (!task || !task.name || !task.name.trim()) {
+      console.warn('puntTask: Task not found or invalid:', taskId);
+      await showModal('Error', '<div>Task not found. It may have been deleted.</div>');
+      return;
+    }
+
+    // User confirmation
+    const ok = await showConfirm(`Move "${task.name}" to next day?`);
+    if (!ok) return;
+
+    try {
+      // Validate state integrity before mutations
+      if (!state.tasks || !Array.isArray(state.tasks)) {
+        throw new Error('Application state corrupted - tasks array is invalid');
+      }
+      if (!state.history || typeof state.history !== 'object') {
+        throw new Error('Application state corrupted - history object is invalid');
+      }
+
+      // Calculate next day's date with robust error handling
+      const dateParts = state.currentDate ? state.currentDate.split('-') : null;
+      if (!dateParts || dateParts.length !== 3) {
+        throw new Error(`Invalid current date format: ${state.currentDate}`);
+      }
+
+      const [year, month, day] = dateParts.map(Number);
+      if (isNaN(year) || isNaN(month) || isNaN(day)) {
+        throw new Error('Date components contain invalid numbers');
+      }
+
+      const currentDayObj = new Date(year, month - 1, day); // month is 0-indexed
+      const nextDayObj = new Date(year, month - 1, day + 1);
+      const nextDayStr = todayDateStr(nextDayObj);
+
+      if (!nextDayStr || !/^\d{4}-\d{2}-\d{2}$/.test(nextDayStr)) {
+        throw new Error(`Generated next day date is invalid: ${nextDayStr}`);
+      }
+
+      // Remove task from current day safely
+      const originalTaskCount = state.tasks.length;
+      state.tasks = state.tasks.filter(t => t.id !== taskId);
+
+      if (state.tasks.length === originalTaskCount - 1) {
+        console.log(`✓ Removed task "${task.name}" from current day`);
+      } else {
+        throw new Error('Failed to remove task from current day');
+      }
+
+      // Initialize next day's data structure if needed
+      if (!state.history[nextDayStr]) {
+        state.history[nextDayStr] = {
+          tasks: [],
+          gapDuration: state.gapDuration || 5,
+          startTime: $('#start-time')?.value || '09:00'
+        };
+        console.log(`✓ Created new date entry: ${nextDayStr}`);
+      }
+
+      if (!state.history[nextDayStr].tasks) {
+        state.history[nextDayStr].tasks = [];
+      }
+
+      // Prepare task for next day
+      const taskToPunt = normalizeTask(task);
+      if (!taskToPunt?.name) {
+        throw new Error('Failed to prepare task for transfer');
+      }
+
+      // Clear fixed time when punting to keep the task flexible
+      taskToPunt.isFixed = false;
+      taskToPunt.fixedStartTime = null;
+
+      // Add to next day's tasks
+      state.history[nextDayStr].tasks.push(taskToPunt);
+
+      // Save changes and update UI
+      saveCurrentDay();
+      calculateSchedule();
+
+    } catch (error) {
+      console.error('puntTask error:', error);
+
+      // Rollback changes on error
+      try {
+        loadHistory(); // Reload from localStorage
+        loadDay(state.currentDate); // Restore current view
+      } catch (rollbackError) {
+        console.error('Rollback failed:', rollbackError);
+      }
+
+      // Show user-friendly error message
+      await showModal('Error', `<div>Failed to move task: ${error.message}. Please try again.</div>`);
+    }
+  }
+
+  // Helper function for readable date formatting
+  function formatDateReadable(dateStr) {
+    try {
+      if (!dateStr || ![10, 10, 10].every((len, i) => dateStr.split('-')[i]?.length === len)) {
+        throw new Error(`Invalid date format: ${dateStr}`);
+      }
+
+      const [year, month, day] = dateStr.split('-').map(Number);
+      if (isNaN(year) || isNaN(month) || isNaN(day)) {
+        throw new Error('Date components contain invalid numbers');
+      }
+
+      const date = new Date(year, month - 1, day);
+      if (isNaN(date.getTime())) {
+        throw new Error('Invalid date object created');
+      }
+
+      const options = { weekday: 'short', month: 'short', day: 'numeric' };
+      return date.toLocaleDateString('en-US', options);
+    } catch (error) {
+      // Fallback to original string on error
+      return dateStr;
+    }
+  }
+
+  // Utility function for safe array operations with validation
+  function safeArrayRemove(array, predicate, options = {}) {
+    const { maxItems = 1, dryRun = false } = options;
+
+    if (!Array.isArray(array) || !predicate || typeof predicate !== 'function') {
+      throw new Error('Invalid array or predicate provided to safeArrayRemove');
+    }
+
+    const originalLength = array.length;
+    const itemsToRemove = [];
+    const newArray = [];
+
+    // Find items to remove (in reverse order to maintain indices)
+    for (let i = array.length - 1; i >= 0; i--) {
+      if (itemsToRemove.length >= maxItems) break;
+      if (predicate(array[i], i, array)) {
+        itemsToRemove.unshift(i);
+      }
+    }
+
+    if (itemsToRemove.length === 0) {
+      throw new Error('No items found to remove matching the predicate');
+    }
+
+    if (itemsToRemove.length > maxItems) {
+      throw new Error(`Too many items found (${itemsToRemove.length}), max allowed: ${maxItems}`);
+    }
+
+    if (dryRun) {
+      return { willRemove: itemsToRemove.length, newLength: originalLength - itemsToRemove.length };
+    }
+
+    // Build new array without the items
+    for (let i = 0; i < array.length; i++) {
+      if (!itemsToRemove.includes(i)) {
+        newArray.push(array[i]);
+      }
+    }
+
+    return { newArray, removed: itemsToRemove };
+  }
+
   // Move task up or down in the list
   function moveTask(id, direction) {
     const index = state.tasks.findIndex(t => t.id === id);
@@ -866,6 +1041,8 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
         await deleteTask(id);
       } else if (btn.classList.contains('btn-fixed')) {
         await toggleFixedTime(id);
+      } else if (btn.classList.contains('btn-punt')) {
+        await puntTask(id);
       } else if (btn.classList.contains('btn-move-up')) {
         moveTask(id, 'up');
       } else if (btn.classList.contains('btn-move-down')) {
