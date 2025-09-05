@@ -20,6 +20,7 @@ A lightweight, single-file, browser-based daily task scheduler. Add tasks with d
   * Add tasks with a name and duration (minutes).
   * Edit task name & duration.
   * Delete tasks instantly.
+  * Punt tasks to the next day by clicking the right arrow (→) button next to each task (clears fixed times to keep tasks flexible).
   * Lock tasks to a fixed start time so they don’t move during auto-scheduling.
 
 * **Reordering**
@@ -62,6 +63,8 @@ A lightweight, single-file, browser-based daily task scheduler. Add tasks with d
 
    * Export History → downloads a JSON file of the full saved history.
    * Import History → select a previously exported history JSON to replace the current saved history. (Always keep a backup.)
+
+8. Punt tasks: Click the right arrow (→) button next to any task to punt it to the next day
 
 Tip: Press Enter while focused on the task name or duration inputs to quickly add a task.
 
@@ -122,6 +125,7 @@ When you import a history JSON file, it replaces the saved history in `localStor
   * `saveCurrentDay()` / `saveHistory()` — persist to `localStorage`.
   * `exportHistory()` / `doImport(parsed)` — history import/export handling.
   * `updateActiveIndicator()` — finds current active task for today and highlights it.
+  * `puntTask(taskId)` — punts a task to the next day with comprehensive validation, user confirmation, and error handling.
 * Mobile UX helpers:
 
   * In-page modal (Promise-based) used for confirmations and text input (no native `prompt`/`confirm`).
