@@ -280,6 +280,7 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
   const modalBody = $('#modal-body');
   const modalOk = $('#modal-ok');
   const modalCancel = $('#modal-cancel');
+  const modal = $('#modal-backdrop .modal');
 
   function showModal(title, bodyHtml, opts = {}){
     return new Promise((resolve) => {
@@ -300,12 +301,19 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
         document.body.style.overflow = '';
         modalOk.removeEventListener('click', onOk);
         modalCancel.removeEventListener('click', onCancel);
+        modalBackdrop.removeEventListener('click', onCancel);
+        modal.removeEventListener('click', stopPropagation);
       }
       function onOk(){ cleanup(); resolve({ok:true, value: inputEl ? inputEl.value : undefined}); }
       function onCancel(){ cleanup(); resolve({ok:false, value: null}); }
+      function stopPropagation(e){ e.stopPropagation(); }
 
       modalOk.addEventListener('click', onOk);
       modalCancel.addEventListener('click', onCancel);
+
+      // Add click-outside-to-close functionality
+      modalBackdrop.addEventListener('click', onCancel);
+      modal.addEventListener('click', stopPropagation);
 
       let inputEl = null;
       if (opts.prompt) {
