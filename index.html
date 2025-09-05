@@ -239,6 +239,7 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
   const HISTORY_KEY = 'taskSchedulerHistory_v1';
   const LEGACY_SINGLE_KEY = 'taskSchedulerData_v1';
   const TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/;
+  const DEFAULT_GAP_DURATION = 10;
 
   const $ = s => document.querySelector(s);
   const $all = s => Array.from(document.querySelectorAll(s));
@@ -256,12 +257,12 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
     set(k,v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} }
   };
 
-  const state = { 
-    history:{}, 
-    currentDate: todayDateStr(), 
-    tasks:[], 
-    gapDuration:5, 
-    activeInterval:null, 
+  const state = {
+    history:{},
+    currentDate: todayDateStr(),
+    tasks:[],
+    gapDuration: DEFAULT_GAP_DURATION,
+    activeInterval:null,
     isEditing: false,
     scrollPosition: 0,
     blurTimeoutId: null,
@@ -383,7 +384,7 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
     const legacy = LS.get(LEGACY_SINGLE_KEY, null);
     if (legacy && legacy.tasks) {
       state.history = {};
-      state.history[state.currentDate] = { tasks: legacy.tasks.map(normalizeTask), gapDuration: Number(legacy.gapDuration) || 5, startTime: legacy.startTime || '09:00' };
+      state.history[state.currentDate] = { tasks: legacy.tasks.map(normalizeTask), gapDuration: Number(legacy.gapDuration) || DEFAULT_GAP_DURATION, startTime: legacy.startTime || '09:00' };
       LS.set(HISTORY_KEY, state.history);
     }
   }
@@ -403,7 +404,7 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
       if (dayData.startTime && TIME_RE.test(dayData.startTime)) $('#start-time').value = dayData.startTime;
     } else {
       state.tasks = [];
-      state.gapDuration = Number($('#gap-duration').value) || 5;
+      state.gapDuration = Number($('#gap-duration').value) || DEFAULT_GAP_DURATION;
       $('#gap-value').textContent = `${state.gapDuration} min`;
     }
     calculateSchedule();
@@ -850,7 +851,7 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
       if (!state.history[nextDayStr]) {
         state.history[nextDayStr] = {
           tasks: [],
-          gapDuration: state.gapDuration || 5,
+          gapDuration: state.gapDuration || DEFAULT_GAP_DURATION,
           startTime: $('#start-time')?.value || '09:00'
         };
         console.log(`✓ Created new date entry: ${nextDayStr}`);
@@ -1154,11 +1155,24 @@ button{background:linear-gradient(180deg,rgba(255,255,255,0.01),rgba(255,255,255
     reader.readAsText(file);
   }
 
+  // Initialize UI with default values
+  function initializeUI() {
+    const gapInput = $('#gap-duration');
+    const gapVal = $('#gap-value');
+
+    // Set initial values from JavaScript constant
+    gapInput.value = DEFAULT_GAP_DURATION;
+    gapVal.textContent = `${DEFAULT_GAP_DURATION} min`;
+  }
+
   // UI wiring
   document.addEventListener('DOMContentLoaded', () => {
     const addBtn = $('#add-task'), taskName = $('#task-name'), taskDur = $('#task-duration');
     const gapInput = $('#gap-duration'), gapVal = $('#gap-value'), startTime = $('#start-time');
     const importHistoryFile = $('#import-history-file');
+
+    // Initialize UI with default values
+    initializeUI();
 
     const dp = $('#date-picker'); dp.value = todayDateStr();
     loadHistory(); loadDay(dp.value);

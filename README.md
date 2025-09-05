@@ -84,7 +84,7 @@ The exported history is a JSON object keyed by ISO date strings (`YYYY-MM-DD`). 
 {
   "2025-09-01": {
     "startTime": "09:00",
-    "gapDuration": 5,
+    "gapDuration": 10,
     "tasks": [
       {
         "id": 1693555200123,
