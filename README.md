@@ -94,14 +94,18 @@ The exported history is a JSON object keyed by ISO date strings (`YYYY-MM-DD`). 
         "name": "Morning review",
         "duration": 30,
         "isFixed": false,
-        "fixedStartTime": null
+        "fixedStartTime": null,
+        "startTime": "09:00",
+        "endTime": "09:30"
       },
       {
         "id": 1693557000456,
         "name": "Deep work",
         "duration": 120,
         "isFixed": true,
-        "fixedStartTime": "10:00"
+        "fixedStartTime": "10:00",
+        "startTime": "10:00",
+        "endTime": "12:00"
       }
     ]
   }
