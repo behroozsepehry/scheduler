@@ -1,0 +1,1002 @@
+(() => {
+  const DEBUG = true;
+
+  const HISTORY_KEY = 'taskSchedulerHistory_v1';
+  const LEGACY_SINGLE_KEY = 'taskSchedulerData_v1';
+  const TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/;
+  const DEFAULT_GAP_DURATION = 10;
+
+  const $ = s => document.querySelector(s);
+  const $all = s => Array.from(document.querySelectorAll(s));
+  const pad2 = n => String(n).padStart(2,'0');
+  const todayDateStr = (d = new Date()) => `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+  const parseDateFromTime = (dateStr, timeStr='00:00') => {
+    const [y,m,d] = dateStr.split('-').map(Number);
+    const [hh,mm] = timeStr.split(':').map(Number);
+    const dt = new Date(); dt.setFullYear(y, m-1, d); dt.setHours(hh, mm, 0, 0); return dt;
+  };
+  const formatTime = dt => `${pad2(dt.getHours())}:${pad2(dt.getMinutes())}`;
+
+  const LS = {
+    get(k, fallback=null){ try { const raw = localStorage.getItem(k); return raw ? JSON.parse(raw) : fallback; } catch(e){ return fallback; } },
+    set(k,v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} }
+  };
+
+  const state = {
+    history:{},
+    currentDate: todayDateStr(),
+    tasks:[],
+    gapDuration: DEFAULT_GAP_DURATION,
+    activeInterval:null,
+    isEditing: false,
+    scrollPosition: 0,
+    blurTimeoutId: null,
+    // Interaction tracking to avoid forcing scroll while the user is actively scrolling/touching
+    userIsInteracting: false,
+    lastInteractionTime: 0,
+    _interactionTimeout: null
+  };
+
+  function log(...args){ if(DEBUG && console && console.log) console.log(...args); }
+
+  // Simple modal utilities that return Promises instead of using browser prompt/confirm
+  const modalBackdrop = $('#modal-backdrop');
+  const modalTitle = $('#modal-title');
+  const modalBody = $('#modal-body');
+  const modalOk = $('#modal-ok');
+  const modalCancel = $('#modal-cancel');
+  const modal = $('#modal-backdrop .modal');
+
+  function showModal(title, bodyHtml, opts = {}){
+    return new Promise((resolve) => {
+      modalTitle.textContent = title || '';
+      if (typeof bodyHtml === 'string') modalBody.innerHTML = bodyHtml;
+      else { modalBody.innerHTML = ''; modalBody.appendChild(bodyHtml); }
+
+      modalBackdrop.style.display = 'flex';
+      modalBackdrop.setAttribute('aria-hidden', 'false');
+
+      // prevent background scroll while modal is open
+      document.body.style.overflow = 'hidden';
+
+      function cleanup(){
+        modalBackdrop.style.display = 'none';
+        modalBackdrop.setAttribute('aria-hidden', 'true');
+        // restore background scrolling
+        document.body.style.overflow = '';
+        modalOk.removeEventListener('click', onOk);
+        modalCancel.removeEventListener('click', onCancel);
+        modalBackdrop.removeEventListener('click', onCancel);
+        modal.removeEventListener('click', stopPropagation);
+      }
+      function onOk(){ cleanup(); resolve({ok:true, value: inputEl ? inputEl.value : undefined}); }
+      function onCancel(){ cleanup(); resolve({ok:false, value: null}); }
+      function stopPropagation(e){ e.stopPropagation(); }
+
+      modalOk.addEventListener('click', onOk);
+      modalCancel.addEventListener('click', onCancel);
+
+      // Add click-outside-to-close functionality
+      modalBackdrop.addEventListener('click', onCancel);
+      modal.addEventListener('click', stopPropagation);
+
+      let inputEl = null;
+      if (opts.prompt) {
+        inputEl = document.createElement('input');
+        inputEl.className = 'modal-input';
+        inputEl.type = 'text';
+        inputEl.value = opts.default || '';
+        modalBody.appendChild(inputEl);
+
+      }
+    });
+  }
+
+  async function showConfirm(message){ const r = await showModal('Confirm', `<div>${message}</div>`); return !!r.ok; }
+  async function showPrompt(message, def=''){ const r = await showModal('Input', `<div>${message}</div>`, {prompt:true, default:def}); return r.ok ? r.value : null; }
+
+  // Enhanced scroll position management
+  let savedScrollPosition = 0;
+  let isScrolling = false;
+  let scrollTimeout = null;
+
+  // safe scroll helper: only scroll when difference is meaningful and user isn't interacting
+  function safeScrollTo(y){
+    try {
+      // Don't scroll if user is currently scrolling or recently scrolled
+      if (isScrolling || (Date.now() - state.lastInteractionTime) < 1000) {
+        return;
+      }
+
+      const diff = Math.abs((window.scrollY || window.pageYOffset) - (y || 0));
+      const since = Date.now() - (state.lastInteractionTime || 0);
+      if (diff > 120 && since > 800) {
+        window.scrollTo({ top: y, left: 0, behavior: 'smooth' });
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  // Save current scroll position
+  function saveScrollPosition() {
+    savedScrollPosition = window.scrollY || document.documentElement.scrollTop;
+    return savedScrollPosition;
+  }
+
+  // Restore saved scroll position with additional checks
+  function restoreScrollPosition(position = null) {
+    const targetPosition = position !== null ? position : savedScrollPosition;
+
+    // Additional check to ensure we don't scroll if user is interacting
+    if ((Date.now() - state.lastInteractionTime) < 1000) {
+      return;
+    }
+
+    // Small delay to ensure DOM is ready
+    setTimeout(() => {
+      if (targetPosition >= 0) {
+        window.scrollTo({ top: targetPosition, left: 0, behavior: 'instant' });
+      }
+    }, 50);
+  }
+
+  function normalizeTask(t) {
+    return {
+      id: t.id || (Date.now() + Math.floor(Math.random()*1000)),
+      name: String(t.name || '').trim(),
+      duration: Number(t.duration || 0),
+      isFixed: Boolean(t.isFixed),
+      fixedStartTime: t.fixedStartTime || null,
+      startTime: t.startTime || null,
+      endTime: t.endTime || null
+    };
+  }
+
+  function loadHistory() {
+    const raw = LS.get(HISTORY_KEY, null);
+    if (raw && typeof raw === 'object') { state.history = raw; return; }
+    const legacy = LS.get(LEGACY_SINGLE_KEY, null);
+    if (legacy && legacy.tasks) {
+      state.history = {};
+      state.history[state.currentDate] = { tasks: legacy.tasks.map(normalizeTask), gapDuration: Number(legacy.gapDuration) || DEFAULT_GAP_DURATION, startTime: legacy.startTime || '09:00' };
+      LS.set(HISTORY_KEY, state.history);
+    }
+  }
+  function saveHistory(){ LS.set(HISTORY_KEY, state.history); }
+  function saveCurrentDay(){ state.history[state.currentDate] = { tasks: state.tasks.map(normalizeTask), gapDuration: state.gapDuration, startTime: $('#start-time').value || '09:00' }; saveHistory(); }
+
+  function loadDay(dateStr) {
+    state.currentDate = dateStr;
+    $('#date-picker').value = dateStr;
+    $('#schedule-for-date').textContent = dateStr;
+    const dayData = state.history[dateStr];
+    if (dayData) {
+      state.tasks = Array.isArray(dayData.tasks) ? dayData.tasks.map(normalizeTask) : [];
+      state.gapDuration = Number(dayData.gapDuration) || 0;
+      $('#gap-duration').value = state.gapDuration;
+      $('#gap-value').textContent = `${state.gapDuration} min`;
+      if (dayData.startTime && TIME_RE.test(dayData.startTime)) $('#start-time').value = dayData.startTime;
+    } else {
+      state.tasks = [];
+      state.gapDuration = Number($('#gap-duration').value) || DEFAULT_GAP_DURATION;
+      $('#gap-value').textContent = `${state.gapDuration} min`;
+    }
+    calculateSchedule();
+    restartActiveIndicator();
+
+  // Prevent action-button focus jumps on mobile by handling touch events for buttons.
+  // This prevents the browser from focusing the button (which can trigger viewport shifts)
+  // while still triggering the button action.
+  (function(){
+    let activeBtn = null;
+    let touchStartY = 0;
+    let touchStartTime = 0;
+
+    scheduleEl.addEventListener('touchstart', (e) => {
+      if (window.innerWidth > 968) return;
+      const btn = e.target.closest('.action-btn');
+      if (!btn) return;
+
+      // Save touch start position and time for scroll detection
+      touchStartY = e.touches[0].clientY;
+      touchStartTime = Date.now();
+
+      // prevent default so the browser doesn't focus the button and shift viewport
+      e.preventDefault();
+      activeBtn = btn;
+      btn.classList.add('touch-pressed');
+
+      // Mark interaction to prevent scroll jumps
+      markInteraction();
+    }, { passive: false });
+
+    scheduleEl.addEventListener('touchmove', (e) => {
+      if (!activeBtn || window.innerWidth > 968) return;
+
+      // If user is scrolling, cancel the button press
+      const touchY = e.touches[0].clientY;
+      const deltaY = Math.abs(touchY - touchStartY);
+      const timeElapsed = Date.now() - touchStartTime;
+
+      // If moved more than 10px in 200ms, consider it a scroll
+      if (deltaY > 10 && timeElapsed < 200) {
+        activeBtn.classList.remove('touch-pressed');
+        activeBtn = null;
+      }
+    }, { passive: true });
+
+    scheduleEl.addEventListener('touchend', (e) => {
+      if (!activeBtn || window.innerWidth > 968) return;
+
+      // Save scroll position before triggering click
+      const scrollPosition = saveScrollPosition();
+
+      // trigger the click handler programmatically
+      try { activeBtn.click(); } catch (err) { }
+      activeBtn.classList.remove('touch-pressed');
+      activeBtn = null;
+
+      // Restore scroll position after a short delay
+      setTimeout(() => {
+        restoreScrollPosition(scrollPosition);
+      }, 150);
+    }, { passive: true });
+
+    // also handle touchcancel
+    scheduleEl.addEventListener('touchcancel', () => {
+      if (activeBtn) {
+        activeBtn.classList.remove('touch-pressed');
+        activeBtn = null;
+      }
+    }, { passive: true });
+  })();
+  }
+
+  function changeDateBy(delta) {
+    const [y,m,d] = state.currentDate.split('-').map(Number);
+    const dt = new Date(y, m-1, d); dt.setDate(dt.getDate() + delta);
+    loadDay(todayDateStr(dt));
+  }
+
+  const tplItem = $('#tpl-schedule-item');
+  const tplGap = $('#tpl-gap');
+  const scheduleEl = $('#schedule');
+  const emptyScheduleEl = $('#empty-schedule');
+
+  // Optimized calculateSchedule function to minimize DOM reflows
+  function calculateSchedule() {
+    // Don't recalculate if we're currently editing
+    if (state.isEditing) return;
+
+    // Save scroll position before DOM updates
+    const scrollPos = saveScrollPosition();
+
+    const header = scheduleEl.querySelector('.schedule-header');
+
+    // Use a document fragment to minimize reflows
+    const newContent = document.createDocumentFragment();
+    newContent.appendChild(header.cloneNode(true));
+
+    if (!state.tasks || state.tasks.length === 0) {
+      const emptyClone = emptyScheduleEl.cloneNode(true);
+      emptyClone.style.display = 'block';
+      newContent.appendChild(emptyClone);
+      scheduleEl.innerHTML = '';
+      scheduleEl.appendChild(newContent);
+      saveCurrentDay();
+      // Restore scroll position after DOM update
+      restoreScrollPosition(scrollPos);
+      return;
+    } else {
+      emptyScheduleEl.style.display = 'none';
+    }
+
+    let cur = parseDateFromTime(state.currentDate, $('#start-time').value || '09:00');
+    const frag = document.createDocumentFragment();
+
+    state.tasks.forEach((task, idx) => {
+      let taskStart, taskEnd;
+      if (task.isFixed && task.fixedStartTime && TIME_RE.test(task.fixedStartTime)) {
+        taskStart = parseDateFromTime(state.currentDate, task.fixedStartTime);
+        taskEnd = new Date(taskStart.getTime()); taskEnd.setMinutes(taskEnd.getMinutes() + Number(task.duration));
+        cur = new Date(taskEnd.getTime());
+      } else {
+        taskStart = new Date(cur.getTime());
+        taskEnd = new Date(taskStart.getTime()); taskEnd.setMinutes(taskEnd.getMinutes() + Number(task.duration));
+        cur = new Date(taskEnd.getTime());
+      }
+
+      task.startTime = formatTime(taskStart);
+      task.endTime = formatTime(taskEnd);
+
+      const node = tplItem.content.cloneNode(true);
+      const el = node.querySelector('.schedule-item');
+      el.dataset.id = task.id;
+      el.dataset.start = task.startTime;
+      el.dataset.end = task.endTime;
+
+      el.classList.toggle('fixed-time', !!task.isFixed);
+      el.querySelector('.time-block').innerHTML = `${task.startTime}<br>${task.endTime}`;
+      const nameEl = el.querySelector('.task-name');
+      nameEl.textContent = task.name;
+      nameEl.dataset.id = task.id;
+      el.querySelector('.mobile-time').textContent = `${task.startTime} - ${task.endTime}`;
+      const fixedNote = el.querySelector('.fixed-note');
+      fixedNote.style.display = task.isFixed && task.fixedStartTime ? 'block' : 'none';
+      fixedNote.textContent = task.isFixed && task.fixedStartTime ? `Fixed: ${task.fixedStartTime}` : '';
+      const durEl = el.querySelector('.editable-duration');
+      durEl.textContent = task.duration;
+      durEl.dataset.id = task.id;
+
+      // Add event listeners for desktop layout
+      nameEl.addEventListener('focus', handleFocus);
+      nameEl.addEventListener('blur', handleBlur);
+      durEl.addEventListener('focus', handleFocus);
+      durEl.addEventListener('blur', handleBlur);
+
+      const lockIcon = el.querySelector('.btn-fixed i');
+      if (lockIcon) {
+        lockIcon.classList.toggle('fa-lock', !!task.isFixed);
+        lockIcon.classList.toggle('fa-lock-open', !task.isFixed);
+      }
+
+      // Create mobile-optimized layout
+      if (window.innerWidth <= 968) {
+        const taskHeader = document.createElement('div');
+        taskHeader.className = 'task-header';
+
+        const taskNameContainer = document.createElement('div');
+        taskNameContainer.style.flex = '1';
+
+        const nameElMobile = nameEl.cloneNode(true);
+        nameElMobile.addEventListener('focus', handleFocus);
+        nameElMobile.addEventListener('blur', handleBlur);
+        taskNameContainer.appendChild(nameElMobile);
+
+        // Create mobile actions container (right side) - horizontal layout
+        const mobileActions = document.createElement('div');
+        mobileActions.className = 'mobile-actions';
+
+        // Add move controls
+        const moveControls = document.createElement('div');
+        moveControls.className = 'mobile-move-controls';
+        moveControls.innerHTML = `
+          <button class="action-btn btn-move-up" type="button" title="Move Up"><i class="fas fa-arrow-up"></i></button>
+          <button class="action-btn btn-move-down" type="button" title="Move Down"><i class="fas fa-arrow-down"></i></button>
+        `;
+
+        // Add action buttons
+        const actionsBlock = document.createElement('div');
+        actionsBlock.className = 'actions-block';
+        const lockIconClass = task.isFixed ? 'fa-lock' : 'fa-lock-open';
+        actionsBlock.innerHTML = `
+          <button class="action-btn btn-punt" type="button" title="Move to Next Day"><i class="fas fa-arrow-right"></i></button>
+          <button class="action-btn btn-fixed" type="button" title="Toggle Fixed Time"><i class="fas ${lockIconClass}"></i></button>
+          <button class="action-btn btn-delete" type="button" title="Delete Task"><i class="fas fa-trash"></i></button>
+        `;
+
+        mobileActions.appendChild(moveControls);
+        mobileActions.appendChild(actionsBlock);
+
+        taskHeader.appendChild(taskNameContainer);
+        taskHeader.appendChild(mobileActions);
+
+        // Task details (time and duration below)
+        const taskDetails = document.createElement('div');
+        taskDetails.className = 'task-details';
+
+        const timeDisplay = document.createElement('div');
+        timeDisplay.className = 'time-display';
+        timeDisplay.innerHTML = `<i class="fas fa-clock" style="font-size:0.8rem;"></i> ${task.startTime} - ${task.endTime}`;
+
+        const durationBlock = document.createElement('div');
+        durationBlock.className = 'duration-block';
+
+        const durSpan = document.createElement('span');
+        durSpan.className = 'editable-duration';
+        durSpan.textContent = task.duration;
+        durSpan.dataset.id = task.id;
+        durSpan.contentEditable = true;
+        durSpan.addEventListener('focus', handleFocus);
+        durSpan.addEventListener('blur', handleBlur);
+
+        durationBlock.appendChild(durSpan);
+        durationBlock.appendChild(document.createTextNode(' min'));
+
+        taskDetails.appendChild(timeDisplay);
+        taskDetails.appendChild(durationBlock);
+
+        // Clear the existing content and add our mobile-optimized structure
+        el.innerHTML = '';
+        el.appendChild(taskHeader);
+        el.appendChild(taskDetails);
+
+        // Add fixed note if needed
+        if (task.isFixed && task.fixedStartTime) {
+          const fixedNoteMobile = document.createElement('div');
+          fixedNoteMobile.className = 'fixed-note';
+          fixedNoteMobile.textContent = `Fixed: ${task.fixedStartTime}`;
+          el.appendChild(fixedNoteMobile);
+        }
+      }
+
+      frag.appendChild(node);
+
+      if (idx < state.tasks.length - 1 && state.gapDuration > 0) {
+        const gapStart = new Date(cur.getTime());
+        const gapEnd = new Date(gapStart.getTime()); gapEnd.setMinutes(gapEnd.getMinutes() + state.gapDuration);
+        const gapNode = tplGap.content.cloneNode(true);
+        const gapEl = gapNode.querySelector('.gap-time');
+        gapEl.dataset.start = formatTime(gapStart);
+        gapEl.dataset.end = formatTime(gapEnd);
+        gapEl.innerHTML = `<i class="fas fa-clock"></i> ${state.gapDuration} min gap: ${gapEl.dataset.start} - ${gapEl.dataset.end}`;
+        frag.appendChild(gapNode);
+        cur = new Date(gapEnd.getTime());
+      }
+    });
+
+    newContent.appendChild(frag);
+
+    // Replace content in one operation to minimize reflows
+    scheduleEl.innerHTML = '';
+    scheduleEl.appendChild(newContent);
+
+    saveCurrentDay();
+
+    // Restore scroll position after DOM update
+    setTimeout(() => {
+      restoreScrollPosition(scrollPos);
+    }, 100);
+  }
+
+  function handleFocus(e) {
+    log('focus', e.target);
+    state.isEditing = true;
+
+    // Save scroll position when focusing on an editable element
+    state.scrollPosition = window.scrollY || document.documentElement.scrollTop;
+
+    // Clear any pending blur timeout
+    if (state.blurTimeoutId) {
+      clearTimeout(state.blurTimeoutId);
+      state.blurTimeoutId = null;
+    }
+  }
+
+  function handleBlur(e) {
+    log('blur', e.target);
+    const el = e.target;
+
+    // Clear any existing timeout
+    if (state.blurTimeoutId) {
+      clearTimeout(state.blurTimeoutId);
+    }
+
+    // Use a timeout to allow the blur to complete before recalculating
+    state.blurTimeoutId = setTimeout(() => {
+      state.isEditing = false;
+
+      if (el.classList.contains('task-name')) {
+        const id = Number(el.dataset.id);
+        const t = state.tasks.find(x => x.id === id);
+        if (t) {
+          t.name = el.textContent.trim() || t.name;
+          calculateSchedule();
+          saveCurrentDay();
+        }
+      } else if (el.classList.contains('editable-duration')) {
+        const id = Number(el.dataset.id);
+        const t = state.tasks.find(x => x.id === id);
+        const newD = parseInt(el.textContent.trim());
+        if (t) {
+          if (!isNaN(newD) && newD > 0) {
+            t.duration = Number(newD);
+            calculateSchedule();
+            saveCurrentDay();
+          } else {
+            el.textContent = t.duration;
+          }
+        }
+      }
+
+      // Restore scroll position after processing blur, but only if the user isn't actively interacting.
+      const since = Date.now() - (state.lastInteractionTime || 0);
+      if (since > 800) safeScrollTo(state.scrollPosition);
+
+      state.blurTimeoutId = null;
+    }, 300); // 300ms delay to ensure the keyboard is fully dismissed
+  }
+
+  function addTask(name, duration, isFixed=false, fixedStartTime=null) {
+    state.tasks.push({
+      id: Date.now() + Math.floor(Math.random()*1000),
+      name: String(name).trim(),
+      duration: Number(duration),
+      isFixed: Boolean(isFixed),
+      fixedStartTime: fixedStartTime || null,
+      startTime: null, endTime: null
+    });
+    calculateSchedule();
+  }
+
+  async function deleteTask(id) {
+    const ok = await showConfirm('Are you sure you want to delete this task?');
+    if (!ok) return;
+    state.tasks = state.tasks.filter(t => t.id !== id);
+    calculateSchedule();
+    saveCurrentDay();
+  }
+
+  async function toggleFixedTime(id) {
+    const t = state.tasks.find(x => x.id === id);
+    if (!t) return;
+    if (t.isFixed) {
+      const ok = await showConfirm('Remove fixed time for this task?');
+      if (!ok) return;
+      t.isFixed = false; t.fixedStartTime = null;
+      calculateSchedule(); saveCurrentDay();
+    } else {
+      const input = await showPrompt('Enter fixed start time (HH:MM):', t.fixedStartTime || '12:00');
+      if (input === null) return;
+      if (TIME_RE.test(input)) {
+        t.isFixed = true; t.fixedStartTime = input;
+        calculateSchedule(); saveCurrentDay();
+      } else {
+        // show a quick alert-like modal
+        await showModal('Invalid', '<div>Time must be in HH:MM (24-hour) format.</div>');
+      }
+    }
+  }
+
+  async function clearDay() {
+    if (!state.tasks || state.tasks.length === 0) {
+      await showModal('Info', '<div>No tasks to delete for this day.</div>');
+      return;
+    }
+    const ok = await showConfirm('Delete ALL tasks for this date? This cannot be undone.');
+    if (!ok) return;
+    state.tasks = [];
+    delete state.history[state.currentDate];
+    calculateSchedule();
+    saveHistory();
+    await showModal('Done', '<div>Day cleared and saved.</div>');
+  }
+
+  // Punt task to next day with comprehensive error handling and user feedback
+  async function puntTask(taskId) {
+    // Input validation
+    if (!taskId || typeof taskId !== 'number' || taskId <= 0) {
+      console.warn('puntTask: Invalid taskId provided:', taskId);
+      await showModal('Error', '<div>Invalid task selected. Please refresh and try again.</div>');
+      return;
+    }
+
+    // Task lookup with validation
+    const task = state.tasks.find(t => t.id === taskId);
+    if (!task || !task.name || !task.name.trim()) {
+      console.warn('puntTask: Task not found or invalid:', taskId);
+      await showModal('Error', '<div>Task not found. It may have been deleted.</div>');
+      return;
+    }
+
+    // User confirmation
+    const ok = await showConfirm(`Move "${task.name}" to next day?`);
+    if (!ok) return;
+
+    try {
+      // Validate state integrity before mutations
+      if (!state.tasks || !Array.isArray(state.tasks)) {
+        throw new Error('Application state corrupted - tasks array is invalid');
+      }
+      if (!state.history || typeof state.history !== 'object') {
+        throw new Error('Application state corrupted - history object is invalid');
+      }
+
+      // Calculate next day's date with robust error handling
+      const dateParts = state.currentDate ? state.currentDate.split('-') : null;
+      if (!dateParts || dateParts.length !== 3) {
+        throw new Error(`Invalid current date format: ${state.currentDate}`);
+      }
+
+      const [year, month, day] = dateParts.map(Number);
+      if (isNaN(year) || isNaN(month) || isNaN(day)) {
+        throw new Error('Date components contain invalid numbers');
+      }
+
+      const currentDayObj = new Date(year, month - 1, day); // month is 0-indexed
+      const nextDayObj = new Date(year, month - 1, day + 1);
+      const nextDayStr = todayDateStr(nextDayObj);
+
+      if (!nextDayStr || !/^\d{4}-\d{2}-\d{2}$/.test(nextDayStr)) {
+        throw new Error(`Generated next day date is invalid: ${nextDayStr}`);
+      }
+
+      // Remove task from current day safely
+      const originalTaskCount = state.tasks.length;
+      state.tasks = state.tasks.filter(t => t.id !== taskId);
+
+      if (state.tasks.length === originalTaskCount - 1) {
+        console.log(`✓ Removed task "${task.name}" from current day`);
+      } else {
+        throw new Error('Failed to remove task from current day');
+      }
+
+      // Initialize next day's data structure if needed
+      if (!state.history[nextDayStr]) {
+        state.history[nextDayStr] = {
+          tasks: [],
+          gapDuration: state.gapDuration || DEFAULT_GAP_DURATION,
+          startTime: $('#start-time')?.value || '09:00'
+        };
+        console.log(`✓ Created new date entry: ${nextDayStr}`);
+      }
+
+      if (!state.history[nextDayStr].tasks) {
+        state.history[nextDayStr].tasks = [];
+      }
+
+      // Prepare task for next day
+      const taskToPunt = normalizeTask(task);
+      if (!taskToPunt?.name) {
+        throw new Error('Failed to prepare task for transfer');
+      }
+
+      // Clear fixed time when punting to keep the task flexible
+      taskToPunt.isFixed = false;
+      taskToPunt.fixedStartTime = null;
+
+      // Add to next day's tasks
+      state.history[nextDayStr].tasks.push(taskToPunt);
+
+      // Save changes and update UI
+      saveCurrentDay();
+      calculateSchedule();
+
+    } catch (error) {
+      console.error('puntTask error:', error);
+
+      // Rollback changes on error
+      try {
+        loadHistory(); // Reload from localStorage
+        loadDay(state.currentDate); // Restore current view
+      } catch (rollbackError) {
+        console.error('Rollback failed:', rollbackError);
+      }
+
+      // Show user-friendly error message
+      await showModal('Error', `<div>Failed to move task: ${error.message}. Please try again.</div>`);
+    }
+  }
+
+  // Helper function for readable date formatting
+  function formatDateReadable(dateStr) {
+    try {
+      if (!dateStr || ![10, 10, 10].every((len, i) => dateStr.split('-')[i]?.length === len)) {
+        throw new Error(`Invalid date format: ${dateStr}`);
+      }
+
+      const [year, month, day] = dateStr.split('-').map(Number);
+      if (isNaN(year) || isNaN(month) || isNaN(day)) {
+        throw new Error('Date components contain invalid numbers');
+      }
+
+      const date = new Date(year, month - 1, day);
+      if (isNaN(date.getTime())) {
+        throw new Error('Invalid date object created');
+      }
+
+      const options = { weekday: 'short', month: 'short', day: 'numeric' };
+      return date.toLocaleDateString('en-US', options);
+    } catch (error) {
+      // Fallback to original string on error
+      return dateStr;
+    }
+  }
+
+  // Utility function for safe array operations with validation
+  function safeArrayRemove(array, predicate, options = {}) {
+    const { maxItems = 1, dryRun = false } = options;
+
+    if (!Array.isArray(array) || !predicate || typeof predicate !== 'function') {
+      throw new Error('Invalid array or predicate provided to safeArrayRemove');
+    }
+
+    const originalLength = array.length;
+    const itemsToRemove = [];
+    const newArray = [];
+
+    // Find items to remove (in reverse order to maintain indices)
+    for (let i = array.length - 1; i >= 0; i--) {
+      if (itemsToRemove.length >= maxItems) break;
+      if (predicate(array[i], i, array)) {
+        itemsToRemove.unshift(i);
+      }
+    }
+
+    if (itemsToRemove.length === 0) {
+      throw new Error('No items found to remove matching the predicate');
+    }
+
+    if (itemsToRemove.length > maxItems) {
+      throw new Error(`Too many items found (${itemsToRemove.length}), max allowed: ${maxItems}`);
+    }
+
+    if (dryRun) {
+      return { willRemove: itemsToRemove.length, newLength: originalLength - itemsToRemove.length };
+    }
+
+    // Build new array without the items
+    for (let i = 0; i < array.length; i++) {
+      if (!itemsToRemove.includes(i)) {
+        newArray.push(array[i]);
+      }
+    }
+
+    return { newArray, removed: itemsToRemove };
+  }
+
+  // Move task up or down in the list
+  function moveTask(id, direction) {
+    const index = state.tasks.findIndex(t => t.id === id);
+    if (index === -1) return;
+
+    // Save current scroll position
+    const scrollPosition = window.scrollY || document.documentElement.scrollTop;
+
+    if (direction === 'up' && index > 0) {
+        // Swap with previous task
+        [state.tasks[index - 1], state.tasks[index]] = [state.tasks[index], state.tasks[index - 1]];
+        calculateSchedule();
+        saveCurrentDay();
+    } else if (direction === 'down' && index < state.tasks.length - 1) {
+        // Swap with next task
+        [state.tasks[index], state.tasks[index + 1]] = [state.tasks[index + 1], state.tasks[index]];
+        calculateSchedule();
+        saveCurrentDay();
+    }
+
+    // Restore scroll position after DOM update, but only if user isn't interacting
+    const since = Date.now() - (state.lastInteractionTime || 0);
+    if (since > 800) safeScrollTo(scrollPosition);
+  }
+
+  // Desktop drag support
+  let draggedEl = null;
+  scheduleEl.addEventListener('dragstart', (e) => {
+    if (window.innerWidth <= 968) return; // Disable drag on mobile
+    const row = e.target.closest('.schedule-item');
+    if (!row) return;
+    draggedEl = row;
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', row.dataset.id); } catch(err){}
+    row.style.opacity = '0.5';
+    log('dragstart', row.dataset.id);
+  });
+  scheduleEl.addEventListener('dragover', (e) => {
+    if (window.innerWidth <= 968) return; // Disable drag on mobile
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  });
+  scheduleEl.addEventListener('drop', (e) => {
+    if (window.innerWidth <= 968) return; // Disable drag on mobile
+    e.preventDefault();
+    const target = e.target.closest('.schedule-item');
+    if (!draggedEl || !target || draggedEl === target) return;
+    const draggedId = Number(draggedEl.dataset.id);
+    const targetId = Number(target.dataset.id);
+    const from = state.tasks.findIndex(t => t.id === draggedId);
+    const to = state.tasks.findIndex(t => t.id === targetId);
+    if (from === -1 || to === -1) return;
+    const [removed] = state.tasks.splice(from,1);
+    state.tasks.splice(to,0,removed);
+    calculateSchedule(); saveCurrentDay();
+    log('drop reorder', draggedId, '->', to);
+  });
+  scheduleEl.addEventListener('dragend', (e) => {
+    if (window.innerWidth <= 968) return; // Disable drag on mobile
+    if (draggedEl) draggedEl.style.opacity = '1'; draggedEl = null;
+  });
+
+  // delegated UI click handlers with enhanced scroll protection
+  scheduleEl.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.action-btn');
+    if (!btn) return;
+
+    // Prevent default behavior to avoid scrolling
+    e.preventDefault();
+
+    // Save scroll position before any operations
+    const scrollPosition = saveScrollPosition();
+
+    const row = btn.closest('.schedule-item');
+    const id = row ? Number(row.dataset.id) : null;
+
+    try {
+      if (btn.classList.contains('btn-delete')) {
+        await deleteTask(id);
+      } else if (btn.classList.contains('btn-fixed')) {
+        await toggleFixedTime(id);
+      } else if (btn.classList.contains('btn-punt')) {
+        await puntTask(id);
+      } else if (btn.classList.contains('btn-move-up')) {
+        moveTask(id, 'up');
+      } else if (btn.classList.contains('btn-move-down')) {
+        moveTask(id, 'down');
+      }
+    } finally {
+      // Restore scroll position after the action completes to avoid jumps (mobile browsers
+      // often adjust viewport on focus/blur or when dialogs close). Also blur the button
+      // only after restoring scroll to avoid triggering additional scrolling.
+      const since = Date.now() - (state.lastInteractionTime || 0);
+      if (since > 300) {
+        setTimeout(() => {
+          restoreScrollPosition(scrollPosition);
+          try { btn.blur(); } catch (err) {}
+        }, 100);
+      } else {
+        try { btn.blur(); } catch (err) {}
+      }
+    }
+  });
+
+  // Enter handling with scroll protection
+  document.addEventListener('keypress', (e) => {
+    if (e.key !== 'Enter') return;
+    const ce = e.target.closest && e.target.closest('[contenteditable="true"]');
+    if (ce) {
+      e.preventDefault();
+      // Save scroll position before blurring
+      const scrollPosition = saveScrollPosition();
+      ce.blur();
+      // Restore scroll position after a short delay
+      setTimeout(() => {
+        restoreScrollPosition(scrollPosition);
+      }, 100);
+      return;
+    }
+    const active = document.activeElement;
+    if (active === $('#task-name') || active === $('#task-duration')) {
+      e.preventDefault();
+      // Save scroll position before clicking add button
+      const scrollPosition = saveScrollPosition();
+      $('#add-task').click();
+      // Restore scroll position after a short delay
+      setTimeout(() => {
+        restoreScrollPosition(scrollPosition);
+      }, 100);
+    }
+  });
+
+  // Improved updateActiveIndicator to prevent scroll jumps
+  function updateActiveIndicator() {
+    // Save current scroll position
+    const scrollPos = saveScrollPosition();
+
+    const isToday = (state.currentDate === todayDateStr());
+    $all('.schedule-item.active, .gap-time.active').forEach(el => el.classList.remove('active'));
+    if (!isToday) {
+      // Restore scroll position if not today
+      restoreScrollPosition(scrollPos);
+      return;
+    }
+    const now = new Date();
+    const elems = Array.from(document.querySelectorAll('.schedule-item, .gap-time'));
+    for (const el of elems) {
+      const start = el.dataset.start;
+      const end = el.dataset.end;
+      if (!start || !end) continue;
+      const s = parseDateFromTime(state.currentDate, start.trim());
+      const e = parseDateFromTime(state.currentDate, end.trim());
+      if (now >= s && now < e) { el.classList.add('active'); break; }
+    }
+
+    // Restore scroll position after updating active indicator
+    setTimeout(() => {
+      restoreScrollPosition(scrollPos);
+    }, 50);
+  }
+  function restartActiveIndicator() { if (state.activeInterval) clearInterval(state.activeInterval); updateActiveIndicator(); state.activeInterval = setInterval(updateActiveIndicator, 10000); }
+
+  function exportHistory() { const blob = new Blob([JSON.stringify(state.history, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `tasks-history-${todayDateStr()}.json`; document.body.appendChild(link); link.click(); setTimeout(() => { URL.revokeObjectURL(link.href); document.body.removeChild(link); }, 1000); }
+
+  // Import only supports full history imports now
+  async function doImport(parsed, asHistory=false) {
+    const isDay = parsed && Array.isArray(parsed.tasks);
+    const isHistory = parsed && typeof parsed === 'object' && Object.values(parsed).some(v => v && Array.isArray(v.tasks));
+    if (asHistory || isHistory) {
+      const ok = await showConfirm('Importing will REPLACE your current saved history. Continue?');
+      if (!ok) return false;
+      state.history = parsed; saveHistory(); loadDay(state.currentDate); await showModal('Done', '<div>History import successful.</div>'); return true;
+    }
+
+    if (isDay) {
+      await showModal('Unsupported', '<div>Single-day import is no longer supported. Please import a full history JSON file.</div>');
+      return false;
+    }
+    await showModal('Invalid', '<div>Invalid JSON format for import. Expected a history export.</div>');
+    return false;
+  }
+
+  function handleImportFileInput(file, asHistory=true) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        const parsed = JSON.parse(evt.target.result);
+        await doImport(parsed, asHistory);
+      } catch(err) { console.error(err); await showModal('Error', '<div>Failed to parse JSON file.</div>'); }
+    };
+    reader.readAsText(file);
+  }
+
+  // Initialize UI with default values
+  function initializeUI() {
+    const gapInput = $('#gap-duration');
+    const gapVal = $('#gap-value');
+
+    // Set initial values from JavaScript constant
+    gapInput.value = DEFAULT_GAP_DURATION;
+    gapVal.textContent = `${DEFAULT_GAP_DURATION} min`;
+  }
+
+  // UI wiring
+  document.addEventListener('DOMContentLoaded', () => {
+    const addBtn = $('#add-task'), taskName = $('#task-name'), taskDur = $('#task-duration');
+    const gapInput = $('#gap-duration'), gapVal = $('#gap-value'), startTime = $('#start-time');
+    const importHistoryFile = $('#import-history-file');
+
+    // Initialize UI with default values
+    initializeUI();
+
+    const dp = $('#date-picker'); dp.value = todayDateStr();
+    loadHistory(); loadDay(dp.value);
+
+    // Handle window resize to recalculate layout
+    window.addEventListener('resize', calculateSchedule);
+
+    $('#date-picker').addEventListener('change', (e) => { loadDay(e.target.value); saveCurrentDay(); });
+    $('#prev-day').addEventListener('click', () => changeDateBy(-1));
+    $('#next-day').addEventListener('click', () => changeDateBy(1));
+    $('#today-btn').addEventListener('click', () => loadDay(todayDateStr()));
+
+    addBtn.addEventListener('click', () => {
+      const name = taskName.value.trim(), duration = parseInt(taskDur.value);
+      if (name && duration > 0) { addTask(name, duration); taskName.value = ''; taskDur.value = '30'; taskName.focus(); saveCurrentDay(); }
+      else showModal('Invalid', '<div>Please enter a valid task name and duration.</div>');
+    });
+
+    gapInput.addEventListener('input', (e) => { state.gapDuration = parseInt(e.target.value); gapVal.textContent = `${state.gapDuration} min`; calculateSchedule(); saveCurrentDay(); });
+    startTime.addEventListener('change', () => { calculateSchedule(); saveCurrentDay(); });
+
+    $('#export-history').addEventListener('click', exportHistory);
+
+    $('#import-history-btn').addEventListener('click', () => importHistoryFile.click());
+    importHistoryFile.addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; handleImportFileInput(f, true); e.target.value = ''; });
+
+    $('#delete-all').addEventListener('click', clearDay);
+
+    window.addEventListener('beforeunload', () => { saveCurrentDay(); saveHistory(); });
+    log('UI wired — per-day import/export removed; history-only import/export (debug mode).');
+  });
+
+  // Throttle helper (simple)
+  function throttle(fn, wait){ let timer = null; return function(...args){ if (timer) return; timer = setTimeout(()=>{ fn.apply(this, args); timer = null; }, wait); }; }
+
+  const throttledUpdateActiveIndicator = throttle(updateActiveIndicator, 200);
+
+  function markInteraction(){
+    state.userIsInteracting = true;
+    state.lastInteractionTime = Date.now();
+    if (state._interactionTimeout) clearTimeout(state._interactionTimeout);
+    state._interactionTimeout = setTimeout(() => { state.userIsInteracting = false; }, 900);
+  }
+
+  // Track touch/scroll/wheel so we don't fight the user's scrolling by forcing scrollTo.
+  window.addEventListener('touchstart', markInteraction, {passive:true});
+  window.addEventListener('touchmove', markInteraction, {passive:true});
+  window.addEventListener('touchend', markInteraction, {passive:true});
+  window.addEventListener('wheel', markInteraction, {passive:true});
+  window.addEventListener('scroll', () => { markInteraction(); throttledUpdateActiveIndicator(); }, {passive:true});
+
+  restartActiveIndicator();
+
+})();
